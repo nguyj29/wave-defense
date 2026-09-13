@@ -5,6 +5,7 @@ import { ROAD_LINES, WALL_SEGMENTS } from '../world/map.ts';
 import type { Obstacle } from '../world/obstacles.ts';
 import type { AllySpawner } from '../entities/spawnerSystem.ts';
 import type { FlowField } from '../world/flowfield.ts';
+import { getSprite, tintedSprite } from './spriteRegistry.ts';
 
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
@@ -143,6 +144,29 @@ export function drawWalls(ctx: CanvasRenderingContext2D, camera: Camera): void {
   }
 }
 
+// Phase 5: doors — a distinct (iron-blue) color from the wood-brown walls
+// so a live door reads clearly as "the breakable part," fading toward a
+// scorched dark red as its HP drops (same green->yellow->red health-bar
+// convention used everywhere else in the game, just applied to the door's
+// own fill instead of a separate bar, since a door IS its own health
+// indicator visually).
+export function drawDoors(ctx: CanvasRenderingContext2D, camera: Camera, doors: { x: number; y: number; w: number; h: number; hp: number; maxHp: number; alive: boolean }[]): void {
+  for (const d of doors) {
+    if (!d.alive) continue;
+    const a = camera.worldToScreen(d.x, d.y);
+    const b = camera.worldToScreen(d.x + d.w, d.y + d.h);
+    const pct = Math.max(0, d.hp / d.maxHp);
+    const r = Math.round(90 + (1 - pct) * 120);
+    const g = Math.round(110 * pct);
+    const bl = Math.round(160 * pct);
+    ctx.fillStyle = `rgb(${r},${g},${bl})`;
+    ctx.fillRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+  }
+}
+
 export function drawSpawners(ctx: CanvasRenderingContext2D, camera: Camera, spawners: AllySpawner[]): void {
   const s = camera.pixelScale;
   for (const sp of spawners) {
@@ -179,11 +203,22 @@ export function drawEntity(ctx: CanvasRenderingContext2D, camera: Camera, e: Ent
 
   ctx.save();
   ctx.globalAlpha = e.alpha ?? 1;
+
+  // Phase 5 sprite-descriptor readiness: if a sprite is registered for this
+  // entity's spriteKey, draw it (tinted by the entity's own color — the
+  // exact same generation-hue/difficulty-warmth color already computed for
+  // the vector-shape path) instead of the vector shape below. No sprite is
+  // registered for any key today (see render/spriteRegistry.ts), so this
+  // branch never actually runs yet — it's the drop-in point, not a live
+  // second rendering path.
+  const sprite = getSprite(e.spriteKey);
   ctx.fillStyle = shapeColorWithFlash(e);
   ctx.translate(p.x, p.y);
   ctx.rotate(e.angle);
 
-  switch (e.shape) {
+  if (sprite) {
+    ctx.drawImage(tintedSprite(e.spriteKey!, sprite, ctx.fillStyle as string), -r, -r, r * 2, r * 2);
+  } else switch (e.shape) {
     case 'circle':
       ctx.beginPath();
       ctx.arc(0, 0, r, 0, Math.PI * 2);

@@ -1,6 +1,6 @@
 import { PLAYER } from '../config.ts';
 import type { Entity } from '../entities/types.ts';
-import { playSfx } from '../audio/sfx.ts';
+import { playSfx, type SfxName } from '../audio/sfx.ts';
 import { pulseHaptic } from '../audio/haptics.ts';
 
 // Debug-only global toggle (F5). Kept as a tiny module-level flag rather than
@@ -76,12 +76,22 @@ function maybeIgniteBomberFuse(target: Entity): void {
 }
 
 /** Faction-agnostic damage-sound (+ best-effort haptics) dispatch, driven by the target's kind/archetype. */
+// Phase 5: extended per-archetype death SFX — every Phase 1-3 archetype now
+// has its own death cue (see audio/sfx.ts's SFX_DEFS additions) instead of
+// the 6 new archetypes all falling back to the generic grunt "thud".
+const DEATH_SFX_BY_ARCHETYPE: Partial<Record<string, SfxName>> = {
+  archer: 'enemyDeathArcher',
+  rusher: 'enemyDeathRusher',
+  bomber: 'enemyDeathBomberCorpse', // the bomber's OWN death, distinct from its detonation SFX ('bomberDetonate') — this plays even if it dies WITHOUT ever detonating
+  healer: 'enemyDeathHealer',
+  fireMage: 'enemyDeathFireMage',
+};
+
 function playDamageSfx(target: Entity): void {
   if (target.kind === 'enemy') {
     if (target.dead) {
       if (target.isBoss) playSfx('enemyDeathBoss');
-      else if (target.archetype === 'archer') playSfx('enemyDeathArcher');
-      else playSfx('enemyDeathGrunt');
+      else playSfx(DEATH_SFX_BY_ARCHETYPE[target.archetype ?? ''] ?? 'enemyDeathGrunt');
       pulseHaptic('kill');
     } else {
       playSfx('enemyHit');

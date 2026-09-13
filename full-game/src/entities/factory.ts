@@ -29,6 +29,7 @@ export function createPlayer(x: number, y: number, maxHp: number): Entity {
   e.health = { hp: maxHp, maxHp };
   e.regen = { rate: PLAYER.regenRate, alwaysOn: false, delay: PLAYER.regenDelay, timeSinceDamage: 999 };
   e.iframeTimer = 0;
+  e.spriteKey = 'player'; // Phase 5 sprite-descriptor readiness — see entities/types.ts
   return e;
 }
 
@@ -76,6 +77,7 @@ export function createAlly(x: number, y: number, spec: AllySpec): Entity {
   e.speedStat = spec.speed * type.speedMult;
   e.aggroRadius = ALLY.aggroRadius;
   e.archetype = type.id; // reused loosely for ally type too — see entities/behaviors/ally.ts
+  e.spriteKey = `ally-${type.id}`; // Phase 5 sprite-descriptor readiness
   return e;
 }
 
@@ -98,6 +100,7 @@ export function createEnemy(
   // entities/behaviors/healer.ts — so the rule holds even for the one
   // archetype that hands out HP.)
   e.archetype = archetype;
+  e.spriteKey = archetype; // Phase 5 sprite-descriptor readiness
   e.isBoss = def.isBoss ?? false;
   e.generation = generation;
   e.ai = { state: 'toCore', targetId: null, strafeDir: 1, facingRefreshTimer: 0 };

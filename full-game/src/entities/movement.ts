@@ -46,12 +46,28 @@ export function applySteeringNoise(e: Entity, dx: number, dy: number, dt: number
 // avoidance on top of whatever behavior code set as the desired velocity:
 // soft same-faction separation (a gentle push so units don't perfectly
 // stack) plus hard circle-vs-obstacle / circle-vs-wall resolution.
+// Phase 5: a door's live collision geometry — see world/map.ts::DOOR_RECTS
+// for its (fixed) position/size and game.ts::updateDoors for HP tracking.
+// Kept as a plain rect + `alive` flag rather than a full Entity (same
+// judgment call as Phase 1's fireballs/ground-effects — see
+// entities/context.ts::FireballSpawn's doc comment for the general
+// reasoning) since a door only ever needs to participate in movement
+// blocking, not in targeting/aggro/rendering-as-a-unit.
+export interface DoorCollider {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  alive: boolean;
+}
+
 export function integrateAndResolve(
   movers: Entity[],
   obstacles: Obstacle[],
   obstacleGrid: SpatialGrid<Obstacle>,
   unitGrid: SpatialGrid<Entity>,
   dt: number,
+  doors: DoorCollider[] = [],
 ): void {
   for (const e of movers) {
     e.prevX = e.x;
@@ -94,6 +110,16 @@ export function integrateAndResolve(
   for (const e of movers) {
     for (const w of WALL_SEGMENTS) {
       resolveCircleVsRect(e, w.x, w.y, w.w, w.h);
+    }
+  }
+
+  // Phase 5: doors block movement exactly like a wall segment while alive
+  // (see game.ts::updateDoors for how they take damage and eventually stop
+  // being alive) — one gap, one door, same rect the wall's own gap leaves
+  // open (world/map.ts::DOOR_RECTS).
+  for (const e of movers) {
+    for (const d of doors) {
+      if (d.alive) resolveCircleVsRect(e, d.x, d.y, d.w, d.h);
     }
   }
 

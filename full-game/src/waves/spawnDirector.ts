@@ -74,6 +74,17 @@ export class SpawnDirector {
   }
 
   /**
+   * Phase 5: this wave's current normalized kill-rate pressure (0..1,
+   * post-hysteresis — the same value that drives currentRate/clump
+   * size/pause length internally), exposed publicly so game.ts can wire
+   * the adaptive music intensity layer to it — see
+   * audio/music.ts::setMusicIntensity.
+   */
+  get pressureLevel(): number {
+    return this.normalizedTarget;
+  }
+
+  /**
    * True once this wave's durationSec has elapsed — from here on, update()
    * refuses to produce any new non-boss-telegraph-committed spawn request.
    * The wave itself does NOT end here (see game.ts/WaveManager): it only

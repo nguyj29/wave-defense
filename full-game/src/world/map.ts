@@ -46,6 +46,20 @@ function wallSegmentsFromGaps(): Rect[] {
   return segments;
 }
 
+// Phase 5: one destructible door rect per wall gap, exactly filling the gap
+// span the wall segments leave open (same y/thickness as the wall itself).
+// While alive a door blocks movement exactly like a wall segment (see
+// entities/movement.ts's doors param); once its HP reaches 0 it stops
+// blocking, so the gap behaves exactly as it always has. See
+// game.ts::updateDoors for the damage/HP-tracking side of this (map.ts only
+// owns geometry, not HP, matching this file's existing "pure layout" role).
+export const DOOR_RECTS: Rect[] = gapSpans().map((gap) => ({
+  x: gap.x0,
+  y: wallY - BASE.wallThickness / 2,
+  w: gap.x1 - gap.x0,
+  h: BASE.wallThickness,
+}));
+
 export const WALL_SEGMENTS: Rect[] = [
   ...wallSegmentsFromGaps(),
   // Side walls: from the north wall down to the world's south edge.

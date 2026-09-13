@@ -155,6 +155,13 @@ export interface Entity {
   fuseDetonated?: boolean; // bomber only: true once detonation has actually fired (guards double-detonation & keeps the corpse alive in the entity list until it does)
   healingTargetIds?: number[]; // healer only: ids currently being healed this tick, for the tether-line render (entities/behaviors/healer.ts)
   bossAbilities?: RuntimeBossAbility[]; // bosses only (Phase 3) — see game.ts::updateBossAbilities
+  // Phase 5 sprite-descriptor readiness: a stable per-archetype key (set in
+  // entities/factory.ts, e.g. the archetype/ally-type id) that
+  // render/spriteRegistry.ts looks up. No sprite is registered for any key
+  // today — see that module's doc comment — so this currently has zero
+  // effect on rendering; it exists so real sprite assets are a registry
+  // entry away, not a renderer rewrite.
+  spriteKey?: string;
   summonedByPlayer?: boolean;
   spawnerId?: number;
   coinValue?: number;

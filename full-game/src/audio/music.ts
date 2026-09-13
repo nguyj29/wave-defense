@@ -264,11 +264,21 @@ function applyVolume(): void {
  * smoothly. Cheap: both loop sources were started together at the same
  * instant so they stay perfectly in phase for the life of the session — no
  * per-call resync needed, just a gain ramp.
+ *
+ * Phase 5: generalized from a boolean on/off to a continuous 0..1 `level` —
+ * wired by game.ts to the SpawnDirector's own normalized kill-rate pressure
+ * (see SpawnDirector.pressureLevel) so the intense layer actually rides the
+ * adaptive spawn-rate curve (louder as the fight gets hotter, not just a
+ * binary "boss present" flag), with an active boss still forcing it to 1
+ * regardless of the moment-to-moment spawn pressure. `true`/`false` still
+ * work at call sites via JS's number coercion (`true` -> 1, `false` -> 0),
+ * so this is a non-breaking generalization of the old boolean API.
  */
-export function setMusicIntensity(active: boolean): void {
+export function setMusicIntensity(level: number): void {
   const ctx = getSharedAudioContext();
   if (!ctx || !intenseGain) return;
   const now = ctx.currentTime;
+  const clamped = Math.max(0, Math.min(1, level));
   intenseGain.gain.cancelScheduledValues(now);
-  intenseGain.gain.linearRampToValueAtTime(muted ? 0 : active ? INTENSE_VOLUME : 0, now + 0.4);
+  intenseGain.gain.linearRampToValueAtTime(muted ? 0 : INTENSE_VOLUME * clamped, now + 0.4);
 }

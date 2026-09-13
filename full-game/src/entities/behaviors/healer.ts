@@ -2,6 +2,7 @@ import { applySteeringNoise } from '../movement.ts';
 import { findNearest } from '../targeting.ts';
 import type { WorldContext } from '../context.ts';
 import type { Entity } from '../types.ts';
+import { playSfx } from '../../audio/sfx.ts';
 
 // Healer AI (full-game Phase 1): anchors behind the horde, heals nearby
 // enemies (never itself — enforced by the `o.id !== e.id` filter below, on
@@ -92,4 +93,9 @@ export function updateHealer(e: Entity, ctx: WorldContext, core: Entity): void {
     healingIds.push(t.id);
   }
   e.healingTargetIds = healingIds;
+  // Phase 5: a small, quiet, occasional tick while actively healing —
+  // probabilistically throttled (rather than a new per-entity timer field)
+  // to roughly once every ~2s per active healer, so a crowd of healers
+  // doesn't turn into a chime spam.
+  if (healingIds.length > 0 && Math.random() < ctx.dt * 0.5) playSfx('healerHealTick', 0.5);
 }

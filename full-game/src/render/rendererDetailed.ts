@@ -12,6 +12,7 @@ import type { Entity } from '../entities/types.ts';
 import { WALL_SEGMENTS } from '../world/map.ts';
 import type { Obstacle } from '../world/obstacles.ts';
 import { interpolatedPos } from './renderer.ts';
+import { getSprite, tintedSprite } from './spriteRegistry.ts';
 
 /** Lightens (positive percent) or darkens (negative) a #rrggbb color. Cheap string math, no canvas objects. */
 function shade(hex: string, percent: number): string {
@@ -153,7 +154,16 @@ export function drawEntityDetailed(ctx: CanvasRenderingContext2D, camera: Camera
   ctx.translate(p.x, p.y);
   ctx.rotate(e.angle);
 
-  switch (e.shape) {
+  // Phase 5 sprite-descriptor readiness — see render/renderer.ts's
+  // drawEntity for the full explanation; the detailed style still draws its
+  // drop-shadow (above) around a registered sprite the same way it would
+  // around a vector shape, it just skips the light/dark bevel faceting
+  // below (a sprite brings its own shading once one exists).
+  const sprite = getSprite(e.spriteKey);
+  if (sprite) {
+    ctx.drawImage(tintedSprite(e.spriteKey!, sprite, base), -r, -r, r * 2, r * 2);
+  } else
+    switch (e.shape) {
     case 'circle': {
       ctx.fillStyle = base;
       ctx.beginPath();

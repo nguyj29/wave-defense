@@ -56,7 +56,14 @@ export type SfxName =
   | 'bomberFuse'
   | 'bomberDetonate'
   | 'fireballLaunch'
-  | 'fireballImpact';
+  | 'fireballImpact'
+  // Phase 5: extended per-archetype death/ability SFX.
+  | 'enemyDeathRusher'
+  | 'enemyDeathBomberCorpse'
+  | 'enemyDeathHealer'
+  | 'enemyDeathFireMage'
+  | 'healerHealTick'
+  | 'doorBreak';
 
 const SFX_DEFS: Record<SfxName, SfxLayer[]> = {
   // Rapid, sharp, higher-pitched, short — reads as automatic-rifle "crack".
@@ -138,6 +145,32 @@ const SFX_DEFS: Record<SfxName, SfxLayer[]> = {
   fireballImpact: [
     { kind: 'tone', wave: 'triangle', freqStart: 300, freqEnd: 80, gain: 0.3, attack: 0.001, decay: 0.2 },
     { kind: 'noise', gain: 0.25, attack: 0.001, decay: 0.25, filterType: 'bandpass', filterFreq: 900, filterQ: 0.8 },
+  ],
+  // Phase 5: extended per-archetype death SFX — a distinct "flavor" per
+  // archetype rather than every non-grunt/archer/boss death reusing
+  // enemyDeathGrunt. Each is a small variation on the existing
+  // sawtooth-descending-tone shape (matching enemyDeathGrunt/Archer's own
+  // style) so the whole family still reads as one consistent "enemy death"
+  // sound family, just pitched/shaped per archetype.
+  enemyDeathRusher: [{ kind: 'tone', wave: 'sawtooth', freqStart: 520, freqEnd: 120, gain: 0.3, attack: 0.001, decay: 0.15 }], // short/sharp — it was fast, it dies fast
+  enemyDeathBomberCorpse: [
+    { kind: 'tone', wave: 'square', freqStart: 260, freqEnd: 50, gain: 0.3, attack: 0.001, decay: 0.3 },
+    { kind: 'noise', gain: 0.15, attack: 0.001, decay: 0.2, filterType: 'lowpass', filterFreq: 500 },
+  ],
+  enemyDeathHealer: [{ kind: 'tone', wave: 'sine', freqStart: 500, freqEnd: 200, gain: 0.26, attack: 0.001, decay: 0.3 }], // softer/rounder than the others — it was never a fighter
+  enemyDeathFireMage: [
+    { kind: 'tone', wave: 'sawtooth', freqStart: 380, freqEnd: 70, gain: 0.3, attack: 0.001, decay: 0.28 },
+    { kind: 'noise', gain: 0.18, attack: 0.001, decay: 0.15, filterType: 'highpass', filterFreq: 1800 },
+  ],
+  // Small, quiet, looping-friendly-if-called-repeatedly tick for a heal
+  // pulse landing — deliberately much quieter than combat SFX so a healer
+  // working on a crowd doesn't drown everything else out.
+  healerHealTick: [{ kind: 'tone', wave: 'sine', freqStart: 700, freqEnd: 900, gain: 0.1, attack: 0.02, decay: 0.12 }],
+  // Door break (Phase 5): a heavier, more "structural" crunch than any
+  // enemy death — wood/metal splintering rather than a body dying.
+  doorBreak: [
+    { kind: 'noise', gain: 0.35, attack: 0.001, decay: 0.3, filterType: 'lowpass', filterFreq: 700 },
+    { kind: 'tone', wave: 'square', freqStart: 180, freqEnd: 40, gain: 0.28, attack: 0.001, decay: 0.35 },
   ],
 };
 

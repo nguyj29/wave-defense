@@ -5,6 +5,7 @@ import {
   CORE,
   DEBUG,
   DIFFICULTY,
+  DOOR,
   ENEMIES,
   endlessFactor,
   GEM,
@@ -46,6 +47,7 @@ import { resetEntityIdCounter } from './entities/types.ts';
 import {
   coreMaxHp,
   createInitialShopLevels,
+  doorMaxHp,
   effectiveGemChance,
   isMaxed,
   rifleMagazine,
@@ -74,6 +76,7 @@ import { drawStartScreen, hitTestStartScreen } from './ui/startScreen.ts';
 import {
   drawBomberFuse,
   drawCollisionRadii,
+  drawDoors,
   drawEntity,
   drawFireball,
   drawFlowFieldDebug,
@@ -91,7 +94,7 @@ import { applyGenerationHue, warmHexColor } from './render/colorUtils.ts';
 import { playSfx } from './audio/sfx.ts';
 import { isMusicMuted, setMusicIntensity, toggleMusicMute } from './audio/music.ts';
 import { FlowField, type Pathfinder } from './world/flowfield.ts';
-import { SPAWNER_POSITIONS } from './world/map.ts';
+import { DOOR_RECTS, SPAWNER_POSITIONS } from './world/map.ts';
 import { generateObstacles, type Obstacle } from './world/obstacles.ts';
 import { SpawnDirector, type SpawnKind } from './waves/spawnDirector.ts';
 import { WaveManager } from './waves/waveManager.ts';
@@ -124,6 +127,19 @@ type RenderStyle = 'flat' | 'detailed';
 interface Fireball extends FireballSpawn {
   traveled: number;
   dead: boolean;
+}
+// Phase 5: a destructible door filling one base-wall gap — see
+// world/map.ts::DOOR_RECTS for the fixed geometry and
+// entities/movement.ts::DoorCollider for the (subset) shape movement
+// blocking actually reads.
+interface Door {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  hp: number;
+  maxHp: number;
+  alive: boolean;
 }
 interface GroundEffect {
   x: number;
@@ -161,6 +177,7 @@ export class Game {
   // Fire mage projectiles/burning-ground zones — see the Fireball/GroundEffect interfaces above.
   fireballs: Fireball[] = [];
   groundEffects: GroundEffect[] = [];
+  doors: Door[] = []; // Phase 5
 
   shopLevels: ShopLevels = createInitialShopLevels();
   coins = 0;
@@ -207,7 +224,7 @@ export class Game {
   private lastUpdateMs = 0;
   private lastRenderMs = 0;
   private deathHandled = new Set<number>();
-  private lastMusicIntense = false;
+  private lastMusicIntensity = 0;
   // Round 8: transient "Wave 5 Complete — Endless Mode" banner, shown once
   // when WaveManager.justEnteredEndless fires. Counts down to 0; the HUD
   // only draws it while > 0.
@@ -268,6 +285,12 @@ export class Game {
     this.fireballs = [];
     this.groundEffects = [];
     this.shopLevels = createInitialShopLevels();
+    // Phase 5: one door per wall gap, HP from the (Phase 4) doorHp shop
+    // item — re-created here (not just HP-reset) since a purchased doorHp
+    // level bought mid-run should still take effect on the run's CURRENT
+    // doors too, and reset() already re-creates every other shop-scaled
+    // structure (core, spawners) from scratch the same way.
+    this.doors = DOOR_RECTS.map((r) => ({ ...r, hp: doorMaxHp(this.shopLevels), maxHp: doorMaxHp(this.shopLevels), alive: true }));
     this.coins = 0;
     this.currentWaveCoinBonus = 0;
     this.summonCooldownRemaining = 0;
@@ -422,6 +445,19 @@ export class Game {
       this.core.health!.maxHp = newMax;
       this.core.health!.hp += delta;
     }
+    if (id === 'doorHp') {
+      // Phase 5: same live-bump pattern as coreHp above — otherwise a
+      // doorHp purchase would only take effect on the NEXT run (reset()
+      // rebuilds doors from shopLevels, which itself resets to 0 every
+      // run), never the current one.
+      const newMax = doorMaxHp(this.shopLevels);
+      for (const d of this.doors) {
+        if (!d.alive) continue;
+        const delta = newMax - d.maxHp;
+        d.maxHp = newMax;
+        d.hp += delta;
+      }
+    }
     playSfx('shopPurchase');
   }
 
@@ -522,6 +558,22 @@ export class Game {
     const projectiles = this.entities.filter((e) => e.kind === 'projectile' && !e.dead);
     updateProjectiles(projectiles, this.obstacleGrid, this.unitGrid, dt, () => {});
 
+    // Phase 5: a live door blocks bullets/arrows the same way it blocks
+    // movement — checked as a small separate pass rather than teaching the
+    // shared bullet-collision pipeline (combat/projectiles.ts) about doors,
+    // since doors aren't Entities (see the Door interface's doc comment).
+    for (const p of projectiles) {
+      if (p.dead || !p.projectile || p.projectile.stopped) continue;
+      for (const d of this.doors) {
+        if (!d.alive) continue;
+        if (p.x >= d.x - p.radius && p.x <= d.x + d.w + p.radius && p.y >= d.y - p.radius && p.y <= d.y + d.h + p.radius) {
+          this.damageDoor(d, p.projectile.damage);
+          p.dead = true;
+          break;
+        }
+      }
+    }
+
     // Fire mage fireballs: fly to their (fixed) target point, then detonate
     // an AoE impact + spawn a burning-ground zone there (see Fireball/
     // GroundEffect and entities/context.ts::FireballSpawn).
@@ -587,9 +639,18 @@ export class Game {
       this.updateBossAbilities(e, dt);
     }
 
+    // Phase 5: doors take contact damage from any enemy touching them
+    // (each contacting enemy contributes DOOR.enemyContactDps) — see
+    // updateDoors(). Run before movement integration so a door that's
+    // about to break this tick still blocked movement THIS tick (matches
+    // how the bomber/boss special-ability ordering already works: state
+    // changes land before the movement pass that reacts to them next
+    // frame).
+    this.updateDoors(dt, liveUnits);
+
     // Movement integration + collision resolution (player/ally/enemy only).
     const movers = liveUnits.filter((e) => e.kind !== 'core');
-    integrateAndResolve(movers, this.obstacles, this.obstacleGrid, this.unitGrid, dt);
+    integrateAndResolve(movers, this.obstacles, this.obstacleGrid, this.unitGrid, dt, this.doors);
 
     // Spawners.
     updateSpawners(
@@ -688,14 +749,20 @@ export class Game {
       const requests = this.spawnDirector.update(dt, aliveEnemies);
       for (const req of requests) this.spawnEnemyFromRequest(req.kind, req.x, req.y);
 
-      // Subtle music intensity bump during boss warning/an active boss —
-      // cheap gain-ramp layer on the already-running, phase-synced loop
-      // (see audio/music.ts). Only call on an actual state change so we
-      // aren't re-triggering the ramp every tick.
+      // Phase 5: adaptive music intensity now rides the SpawnDirector's own
+      // normalized kill-rate pressure continuously (see
+      // SpawnDirector.pressureLevel/audio/music.ts::setMusicIntensity),
+      // rather than a plain boss-present boolean — a wave that's just
+      // running hot (lots of kills, spawn rate near max) gets the intense
+      // layer bleeding in too, not only an actual boss fight. An active
+      // boss (or its warning telegraph) still forces full intensity
+      // regardless of the moment-to-moment spawn pressure. A small deadband
+      // avoids rescheduling the gain ramp every single tick.
       const bossActive = this.spawnDirector.bossWarningActive || this.entities.some((e) => e.kind === 'enemy' && e.isBoss && !e.dead);
-      if (bossActive !== this.lastMusicIntense) {
-        this.lastMusicIntense = bossActive;
-        setMusicIntensity(bossActive);
+      const targetIntensity = bossActive ? 1 : this.spawnDirector.pressureLevel;
+      if (Math.abs(targetIntensity - this.lastMusicIntensity) > 0.03) {
+        this.lastMusicIntensity = targetIntensity;
+        setMusicIntensity(targetIntensity);
       }
     }
 
@@ -990,6 +1057,42 @@ export class Game {
     }
   }
 
+  /**
+   * Phase 5: contact damage from any enemy touching a live door — one
+   * pass, checked against a closest-point-on-rect distance (same shape as
+   * entities/movement.ts::resolveCircleVsRect's own overlap test, just
+   * read-only here). Multiple enemies at the same door each contribute
+   * their own DOOR.enemyContactDps, so a crowd breaks it faster than a
+   * straggler — the intended "the horde WILL get through eventually,
+   * defend the chokepoint" tension.
+   */
+  private updateDoors(dt: number, liveUnits: Entity[]): void {
+    for (const d of this.doors) {
+      if (!d.alive) continue;
+      let contactCount = 0;
+      for (const e of liveUnits) {
+        if (e.kind !== 'enemy') continue;
+        const closestX = Math.max(d.x, Math.min(e.x, d.x + d.w));
+        const closestY = Math.max(d.y, Math.min(e.y, d.y + d.h));
+        const dx = e.x - closestX;
+        const dy = e.y - closestY;
+        if (dx * dx + dy * dy <= e.radius * e.radius) contactCount++;
+      }
+      if (contactCount > 0) this.damageDoor(d, DOOR.enemyContactDps * contactCount * dt);
+    }
+  }
+
+  /** Applies damage to a door, breaking it (and playing the SFX) exactly once when its HP first reaches 0. */
+  private damageDoor(door: Door, amount: number): void {
+    if (!door.alive) return;
+    door.hp -= amount;
+    if (door.hp <= 0) {
+      door.hp = 0;
+      door.alive = false;
+      playSfx('doorBreak');
+    }
+  }
+
   // -------------------------------------------------------------------
   // Debug keys
   // -------------------------------------------------------------------
@@ -1066,6 +1169,7 @@ export class Game {
     else drawObstacles(ctx, this.camera, this.obstacles);
     if (detailed) drawWallsDetailed(ctx, this.camera);
     else drawWalls(ctx, this.camera);
+    drawDoors(ctx, this.camera, this.doors);
     drawSpawners(ctx, this.camera, this.spawners);
     drawShopMarker(ctx, this.camera);
 

@@ -574,3 +574,136 @@ exactly; risk mode's enemy HP multiplier applied exactly (30 base grunt HP
 visual "OWNED" state rendering and the start screen's risk-mode text
 line/color (their underlying data — `isMaxed`, `riskMode` — were verified
 directly; the pixel output was not screenshotted).
+
+## Phase 5 — doors, sprite-descriptor readiness, extended audio, adaptive music
+
+### Doors with HP blocking movement
+
+One door per base-wall gap (`world/map.ts::DOOR_RECTS`, exactly filling the
+gap span the wall segments already leave open), HP from the Phase 4
+`doorHp` shop item (`economy/shop.ts::doorMaxHp`). **Judgment call**: doors
+are NOT full ECS Entities — they're a small `Door` interface on `Game`
+(position/size/hp/alive), the same "plain data, not an Entity" choice made
+for Phase 1's fireballs/ground-effects, because a door only needs to
+participate in (a) movement blocking and (b) taking damage from bullets and
+adjacent enemies — it never needs targeting/aggro/AI, so giving it a full
+Entity (health component, faction, collision radius that doesn't match its
+rectangular shape) felt like more machinery than the feature needs.
+- **Movement blocking**: `entities/movement.ts::integrateAndResolve` gained
+  an optional `doors: DoorCollider[]` parameter, resolved with the exact
+  same `resolveCircleVsRect` helper already used for `WALL_SEGMENTS` —
+  a live door blocks exactly like a wall; a broken one (`alive: false`) is
+  skipped, so the gap reopens exactly as it always behaved.
+- **Damage sources**: (1) any live enemy touching a door's rect contributes
+  `DOOR.enemyContactDps` (12) per tick — a crowd breaks a door faster than
+  a straggler, checked once per tick in the new `Game.updateDoors()`; (2)
+  any player-faction projectile (bullet or grenade... actually grenades
+  don't fly as projectiles, only bullets/arrows do — see below) overlapping
+  a door's rect is absorbed by it and dealt its damage, so a player CAN
+  shoot a door down themselves (e.g. to reposition a fight), checked in a
+  small pass right after `updateProjectiles()` rather than teaching the
+  shared bullet-collision pipeline about a non-Entity target type.
+  **Known gap**: thrown grenades (Phase 2's bomber-class weapon and, in
+  spirit, the enemy fire mage's fireball) fly straight to a fixed target
+  point without per-frame collision checks (see Phase 1/2's fireball
+  design), so they don't currently get stopped by a door in their path —
+  flagged as a minor inconsistency, not fixed this phase given how the
+  fireball pipeline is structured.
+- **Pathfinding note**: the flow field is NOT aware of doors (it only reads
+  `WALL_SEGMENTS` + obstacles, unchanged) — enemies still "aim" through a
+  gap a door currently blocks and get physically stopped there via
+  collision resolution rather than routing around. This is actually the
+  desired chokepoint behavior (a horde masses at a defended gate and
+  overwhelms it, rather than calmly detouring around), not a bug, but
+  worth naming explicitly since it wasn't a deliberate pathfinding design
+  — it's what falls out of not touching the flow field.
+- **Rendering**: `render/renderer.ts::drawDoors` — an iron-blue rect that
+  reddens as HP drops (same green->yellow->red convention as every other
+  health readout in the game, applied to the door's own fill since a door
+  IS its health indicator, no separate bar needed).
+
+### Sprite-descriptor readiness
+
+`render/spriteRegistry.ts` is the "readiness" the brief asked for: a
+`registerSprite(key, image)` / `getSprite(key)` registry (empty today — no
+real assets exist yet, deliberately out of scope) plus `tintedSprite()`,
+which multiply-blends a grayscale source image by an entity's own computed
+color exactly the way `render/colorUtils.ts::applyGenerationHue`/
+`warmHexColor` already compute that color for the current vector-shape
+rendering — so swapping in real sprites later needs no change to how
+colors are decided, only to what gets drawn with them. Every entity now
+carries a stable `spriteKey` (set once in `entities/factory.ts` — the
+archetype id for enemies, `ally-${type}` for allies, `'player'` for the
+player); both `render/renderer.ts::drawEntity` and
+`rendererDetailed.ts::drawEntityDetailed` check `getSprite(e.spriteKey)`
+first and only fall back to the existing vector-shape switch when nothing
+is registered — which is unconditionally true today, so this is a
+compile-time-verified drop-in point, not a live parallel rendering path
+needing its own testing. **The existing F10 flat/detailed toggle is
+unchanged and stays meaningful post-sprite-swap** — both styles would draw
+the same registered sprite, 'detailed' just keeps adding its
+shadow/shading treatment on top, exactly as it does for vector shapes
+today.
+
+### Extended per-archetype audio
+
+Every Phase 1-3 archetype that was previously falling back to
+`enemyDeathGrunt`'s generic thud now has its own death SFX
+(`enemyDeathRusher`/`enemyDeathBomberCorpse`/`enemyDeathHealer`/
+`enemyDeathFireMage`, each a small variation on the existing
+sawtooth-descending-tone family so the whole set still reads as one
+consistent "enemy death" sound, not five unrelated new noises) —
+dispatched via a small lookup table in `combat/damage.ts` instead of the
+old inline if/else chain. Also added: a quiet, probabilistically-throttled
+`healerHealTick` (roughly once every ~2s per actively-healing healer,
+avoiding a new per-entity timer field) and a `doorBreak` crunch distinct
+from any enemy-death sound (structural, not organic).
+
+### Adaptive music intensity wired to the spawn director
+
+`audio/music.ts::setMusicIntensity` was generalized from a boolean
+on/off to a continuous `0..1 level` (backward-compatible — `true`/`false`
+still coerce to `1`/`0` via JS, though every call site was updated to pass
+a real number). `game.ts` now feeds it
+`Math.max(bossActive ? 1 : 0, spawnDirector.pressureLevel)` — a new public
+getter exposing the SpawnDirector's own internal normalized kill-rate
+pressure (the same 0..1 value that already drives its spawn rate/clump
+size/pause length) — so the intense layer now genuinely rides how hot the
+current wave's adaptive difficulty is running, not just "is a boss
+present." An active boss (or its warning telegraph) still forces full
+intensity regardless of the moment-to-moment pressure reading. A small
+deadband (0.03) on the update avoids rescheduling the Web Audio gain ramp
+every single fixed tick.
+
+### Verified live vs. code-review only
+
+Live-verified: all 3 doors exist at the correct wall-gap positions with
+correct HP from the shop-derived `doorMaxHp()`; `damageDoor()` correctly
+clamps to 0 and sets `alive: false` on overkill; a grunt placed directly
+against a live door is physically held back by it over 2 real-time seconds
+(barely progressing versus its normal speed) while chipping the door's HP
+at very close to the expected `enemyContactDps` rate; `pressureLevel` and
+the tracked `lastMusicIntensity` are both reachable and correctly
+initialized; the sprite registry returns `null` for every key including
+`undefined`, confirming the fallback path is what actually renders today.
+Code-review only: the actual pixel output of `drawDoors`' color-by-HP
+gradient, the extended per-archetype death SFX actually sounding distinct
+(Web Audio synthesis output wasn't captured/analyzed, only that the
+correct `SfxName` is selected per archetype), and the music intensity gain
+ramp's audible effect (only the numeric `level` value reaching
+`setMusicIntensity` was verified, not the resulting audio).
+
+## Final state
+
+All 5 phases plus the scoring system are implemented, build cleanly
+(`npm run build` — `tsc && vite build`, zero errors) as of this entry, and
+have each been smoke-tested live via headless-Chromium Playwright driving
+the actual running `Game` instance (not just unit-style calls to isolated
+functions) at least once per phase's headline mechanics. See each phase's
+section above for exactly what was live-verified vs. code-review-only, and
+the "judgment calls" / "likely rebalancing candidates" called out inline
+throughout — none of the numeric tuning in this project (wave economy mix
+shares, boss ability numbers, scoring component weights/grade cutoffs,
+class stat multipliers, risk-modifier strength) has had real playtesting
+behind it; it's all internally-consistent and verified-correct
+mechanically, but rebalancing against actual play should be expected.

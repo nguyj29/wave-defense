@@ -1289,6 +1289,15 @@ export const ALLY_TYPES: Record<AllyTypeId, AllyTypeDef> = {
 // chosen over a leveled dial (the brief called for "a separate settable
 // value," which a boolean satisfies most simply).
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Doors (Phase 5) — geometry lives in world/map.ts::DOOR_RECTS, HP comes
+// from economy/shop.ts::doorMaxHp() (Phase 4's doorHp shop item); this is
+// just the contact-damage rate.
+// ---------------------------------------------------------------------------
+export const DOOR = {
+  enemyContactDps: 12, // per contacting enemy, so a crowd breaks a door faster than one straggler
+};
+
 export const RISK_MODIFIER = {
   enemyMult: 1.25, // extra multiplier on enemy HP/damage when active, on top of the difficulty tier's own multiplier
   rewardMult: 1.35, // extra multiplier on coin/gem payout when active
