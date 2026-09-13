@@ -546,9 +546,51 @@ export interface EnemyDef {
     enemyFalloff: number;
   };
   isBoss?: boolean;
+  // Phase 3: any number of special abilities a boss cycles through
+  // independent of its normal melee/ranged attack — see game.ts's central
+  // boss-ability tick (mirrors the Phase 1 bomber-fuse pattern: driven
+  // outside AI behavior code so it's easy to reason about/extend per boss).
+  bossAbilities?: BossAbilityDef[];
 }
 
-export type EnemyArchetypeId = 'grunt' | 'archer' | 'rusher' | 'bomber' | 'healer' | 'fireMage' | 'boss';
+// Phase 3 boss special abilities — one config shape covering all 5 bosses'
+// mechanics, dispatched by `type` in game.ts's central tick
+// (Game.updateBossAbilities). Added as a list (not a single ability) so the
+// wave-25 final boss can combine more than one (see ENEMIES.bossApex).
+export interface BossAbilityDef {
+  type: 'slam' | 'summonAdds' | 'burnPulse' | 'enrageAtLowHp';
+  cooldown: number; // seconds between uses; ignored for 'enrageAtLowHp' (a one-time threshold trigger, not a repeating cooldown)
+  // 'slam': an instant faction-aware AoE centered on the boss (reuses
+  // combat/areaDamage.ts, same as bomber/fire-mage).
+  damage?: number;
+  radius?: number;
+  // 'summonAdds': spawns reinforcements at the boss's position.
+  summonCount?: number;
+  summonArchetype?: EnemyArchetypeId;
+  // 'burnPulse': drops a burning-ground zone under the boss (reuses
+  // Game.groundEffects, same mechanic as the fire mage's burning ground).
+  burnDuration?: number;
+  burnDps?: number;
+  burnRadius?: number;
+  // 'enrageAtLowHp': permanent speed/damage buff once HP drops below the
+  // threshold fraction of max HP.
+  hpThresholdFraction?: number;
+  speedMult?: number;
+  dmgMult?: number;
+}
+
+export type EnemyArchetypeId =
+  | 'grunt'
+  | 'archer'
+  | 'rusher'
+  | 'bomber'
+  | 'healer'
+  | 'fireMage'
+  | 'boss'
+  | 'bossSiege'
+  | 'bossSummoner'
+  | 'bossInferno'
+  | 'bossApex';
 
 // Shared faction-aware-area-damage falloff for bomber detonation / fire-mage
 // burning ground: "friendly fire" among enemies is intentional and identical
@@ -717,6 +759,10 @@ export const ENEMIES: Record<EnemyArchetypeId, EnemyDef> = {
       enemyFalloff: ENEMY_AOE_FALLOFF,
     },
   },
+  // Wave 5 boss — "Warlord": a straightforward heavy melee unit, no special
+  // ability. The prototype's original boss, kept as the simplest of the 5 —
+  // a first boss encounter should teach "big HP bar, hits hard, tank it or
+  // kite it," not a mechanic on top of that.
   boss: {
     key: 'boss',
     shape: 'hexagon',
@@ -734,6 +780,98 @@ export const ENEMIES: Record<EnemyArchetypeId, EnemyDef> = {
     behavior: 'melee',
     isBoss: true,
   },
+  // Wave 10 boss — "Siegebreaker": a kiter (like the archer, but a boss)
+  // that periodically slams the ground in an AoE, punishing melee players
+  // who stand and trade rather than respecting its ranged attack.
+  bossSiege: {
+    key: 'bossSiege',
+    shape: 'hexagon',
+    color: '#7a0dd6',
+    radius: 50,
+    hp: 2200,
+    speed: 65,
+    meleeDamage: 0,
+    meleeRate: 0,
+    aggroRadius: 550,
+    anchor: 'core',
+    leashRadius: 0,
+    coinsMin: 40,
+    coinsMax: 40,
+    behavior: 'kiter',
+    ranged: { damage: 22, rate: 0.6, projectileSpeed: 480, range: 500, kiteDistance: 380 },
+    isBoss: true,
+    bossAbilities: [{ type: 'slam', cooldown: 6, damage: 35, radius: 160 }],
+  },
+  // Wave 15 boss — "Summoner" (unrelated to the player's Summoner class):
+  // periodically calls in grunt reinforcements at its own position, so the
+  // fight is as much about managing adds as damaging the boss itself.
+  bossSummoner: {
+    key: 'bossSummoner',
+    shape: 'hexagon',
+    color: '#7a0dd6',
+    radius: 48,
+    hp: 3200,
+    speed: 60,
+    meleeDamage: 20,
+    meleeRate: 1,
+    aggroRadius: 280,
+    anchor: 'core',
+    leashRadius: 0,
+    coinsMin: 55,
+    coinsMax: 55,
+    behavior: 'melee',
+    isBoss: true,
+    bossAbilities: [{ type: 'summonAdds', cooldown: 8, summonCount: 3, summonArchetype: 'grunt' }],
+  },
+  // Wave 20 boss — "Inferno": periodically drops a burning-ground pulse
+  // under itself (reusing the fire mage's burning-ground mechanic at a
+  // bigger radius) — area denial around a melee-range boss, forcing players
+  // to fight at its edge and reposition rather than stand still.
+  bossInferno: {
+    key: 'bossInferno',
+    shape: 'hexagon',
+    color: '#7a0dd6',
+    radius: 50,
+    hp: 4600,
+    speed: 65,
+    meleeDamage: 26,
+    meleeRate: 1,
+    aggroRadius: 300,
+    anchor: 'core',
+    leashRadius: 0,
+    coinsMin: 70,
+    coinsMax: 70,
+    behavior: 'melee',
+    isBoss: true,
+    bossAbilities: [{ type: 'burnPulse', cooldown: 7, burnDuration: 4, burnDps: 8, burnRadius: 170 }],
+  },
+  // Wave 25 boss — "Apex": the final boss, combining two of the previous
+  // bosses' mechanics (a slam AND periodic reinforcements) plus a one-time
+  // enrage past 40% HP (faster + harder-hitting for the closing stretch of
+  // the fight) — deliberately the "everything you've learned, at once"
+  // finale rather than a wholly new 4th mechanic.
+  bossApex: {
+    key: 'bossApex',
+    shape: 'hexagon',
+    color: '#7a0dd6',
+    radius: 55,
+    hp: 7000,
+    speed: 68,
+    meleeDamage: 32,
+    meleeRate: 1,
+    aggroRadius: 320,
+    anchor: 'core',
+    leashRadius: 0,
+    coinsMin: 100,
+    coinsMax: 100,
+    behavior: 'melee',
+    isBoss: true,
+    bossAbilities: [
+      { type: 'slam', cooldown: 7, damage: 40, radius: 170 },
+      { type: 'summonAdds', cooldown: 10, summonCount: 2, summonArchetype: 'rusher' },
+      { type: 'enrageAtLowHp', cooldown: 0, hpThresholdFraction: 0.4, speedMult: 1.3, dmgMult: 1.3 },
+    ],
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -745,7 +883,13 @@ export interface WaveDef {
   archers: number;
   rushers: number;
   bombers: number;
+  healers: number;
+  fireMages: number;
   boss: number;
+  // Phase 3: which boss archetype to actually spawn when `boss > 0` fires —
+  // see waves/spawnDirector.ts, which reads this instead of a hardcoded
+  // 'boss' kind. Irrelevant (never read) on a wave with boss: 0.
+  bossArchetype: EnemyArchetypeId;
   durationSec: number;
   intermissionSec: number;
 }
@@ -761,33 +905,94 @@ export interface WaveDef {
 // `economy/shop.ts::waveDurationScaleFactor()`, so no other change is needed
 // when you do. See DECISIONS.md for the scaling rationale.
 //
-// Phase 1 (full-game): extended from the prototype's 5 waves to 13 —
-// enough to exercise generation progression through violet/indigo/blue and
-// into green (wave 13), and to reach wave 9's generation-mixing rule, per
-// the Phase 1 brief. This is explicitly NOT the full 25-wave
-// budget/mix-percentage economy (that's Phase 3 scope) — counts past wave 5
-// are a reasonable-but-not-final linear-ish ramp, picked only to prove the
-// generation system and the 4 new archetypes actually work end-to-end.
-// Rusher intros wave 6, bomber wave 9 (matching the brief's per-archetype
-// intro waves); healer (wave 13) and fire mage (wave 17) are fully
-// implemented and spawnable via the F6 debug key from Phase 1 on, but wave
-// 13 here doesn't yet schedule the healer in the normal spawn budget — that
-// wiring is Phase 3 work, done once the full 25-wave/mix-table exists.
-export const WAVES: WaveDef[] = [
-  { wave: 1, grunts: 24, archers: 0, rushers: 0, bombers: 0, boss: 0, durationSec: 60, intermissionSec: 60 },
-  { wave: 2, grunts: 34, archers: 0, rushers: 0, bombers: 0, boss: 0, durationSec: 60, intermissionSec: 60 },
-  { wave: 3, grunts: 30, archers: 12, rushers: 0, bombers: 0, boss: 0, durationSec: 60, intermissionSec: 60 },
-  { wave: 4, grunts: 36, archers: 18, rushers: 0, bombers: 0, boss: 0, durationSec: 60, intermissionSec: 60 },
-  { wave: 5, grunts: 40, archers: 24, rushers: 0, bombers: 0, boss: 1, durationSec: 60, intermissionSec: 60 },
-  { wave: 6, grunts: 40, archers: 20, rushers: 10, bombers: 0, boss: 0, durationSec: 70, intermissionSec: 60 },
-  { wave: 7, grunts: 42, archers: 22, rushers: 12, bombers: 0, boss: 0, durationSec: 70, intermissionSec: 60 },
-  { wave: 8, grunts: 44, archers: 24, rushers: 14, bombers: 0, boss: 0, durationSec: 70, intermissionSec: 60 },
-  { wave: 9, grunts: 40, archers: 22, rushers: 14, bombers: 8, boss: 0, durationSec: 80, intermissionSec: 60 },
-  { wave: 10, grunts: 42, archers: 24, rushers: 16, bombers: 10, boss: 0, durationSec: 80, intermissionSec: 60 },
-  { wave: 11, grunts: 44, archers: 26, rushers: 18, bombers: 11, boss: 0, durationSec: 80, intermissionSec: 60 },
-  { wave: 12, grunts: 46, archers: 28, rushers: 20, bombers: 12, boss: 0, durationSec: 80, intermissionSec: 60 },
-  { wave: 13, grunts: 48, archers: 30, rushers: 22, bombers: 13, boss: 0, durationSec: 90, intermissionSec: 60 },
-];
+// Phase 3 (full-game): the full 25-wave budget/mix-percentage economy,
+// replacing Phase 1's 13-wave placeholder extension. Generated once, at
+// module load, by `buildWaveTable()` below from a small set of tunable
+// constants (total per-wave budget growth rate, each archetype's target
+// mix share once unlocked, boss waves) rather than 25 hand-typed literals —
+// still "pure data" from every consumer's point of view (WAVES is a plain
+// array; nothing downstream calls the generator), but the growth curve and
+// mix shares are each one number to retune instead of 25 rows to
+// hand-edit. See DECISIONS.md for the exact numbers and reasoning.
+const WAVE_ECONOMY = {
+  // Total non-boss enemy budget at wave 1, growing at this rate per wave —
+  // deliberately closer to the old endless-mode growthRate (1.12) than a
+  // wild curve, so the 25-wave curve reads as "the old endless escalation,
+  // but pre-authored and capped at a sane top end" rather than a new shape.
+  budgetWave1: 24,
+  budgetGrowthPerWave: 1.1,
+  budgetCap: 260,
+  // Once an archetype is unlocked (introWave reached), it claims this
+  // fraction of the wave's total budget; grunt (always unlocked, no
+  // introWave) absorbs whatever's left over. Shares intentionally don't sum
+  // to 1 on their own — most waves have only some archetypes unlocked, and
+  // grunt is the remainder in every case.
+  archerIntroWave: 3,
+  archerShare: 0.28,
+  rusherIntroWave: 6,
+  rusherShare: 0.16,
+  bomberIntroWave: 9,
+  bomberShare: 0.1,
+  healerIntroWave: 13,
+  healerShare: 0.08,
+  fireMageIntroWave: 17,
+  fireMageShare: 0.1,
+};
+
+const BOSS_WAVES: Partial<Record<number, EnemyArchetypeId>> = {
+  5: 'boss',
+  10: 'bossSiege',
+  15: 'bossSummoner',
+  20: 'bossInferno',
+  25: 'bossApex',
+};
+
+function buildWaveTable(): WaveDef[] {
+  const e = WAVE_ECONOMY;
+  const waves: WaveDef[] = [];
+  for (let wave = 1; wave <= 25; wave++) {
+    const budget = Math.min(e.budgetCap, Math.round(e.budgetWave1 * Math.pow(e.budgetGrowthPerWave, wave - 1)));
+    let remaining = 1;
+    const shareOf = (introWave: number, share: number) => {
+      if (wave < introWave) return 0;
+      const s = Math.min(share, remaining);
+      remaining -= s;
+      return s;
+    };
+    const archerShare = shareOf(e.archerIntroWave, e.archerShare);
+    const rusherShare = shareOf(e.rusherIntroWave, e.rusherShare);
+    const bomberShare = shareOf(e.bomberIntroWave, e.bomberShare);
+    const healerShare = shareOf(e.healerIntroWave, e.healerShare);
+    const fireMageShare = shareOf(e.fireMageIntroWave, e.fireMageShare);
+    const gruntShare = remaining; // whatever's left, always >= 0 by construction
+
+    const bossArchetype = BOSS_WAVES[wave];
+    // *** TEMPORARY TESTING VALUE ***: durationSec/intermissionSec are
+    // shortened from the designed 180s/intermission pacing for faster dev
+    // iteration across a full 25-wave run — see the comment on
+    // WAVE_DESIGN_BASELINE_DURATION_SEC below for how shop prices
+    // auto-compensate. Grows mildly by wave tier so later waves (bigger
+    // budgets) get a little more time, capped at 150s.
+    const durationSec = Math.min(150, 60 + Math.floor((wave - 1) / 4) * 10);
+
+    waves.push({
+      wave,
+      grunts: Math.round(budget * gruntShare),
+      archers: Math.round(budget * archerShare),
+      rushers: Math.round(budget * rusherShare),
+      bombers: Math.round(budget * bomberShare),
+      healers: Math.round(budget * healerShare),
+      fireMages: Math.round(budget * fireMageShare),
+      boss: bossArchetype ? 1 : 0,
+      bossArchetype: bossArchetype ?? 'boss',
+      durationSec,
+      intermissionSec: 60,
+    });
+  }
+  return waves;
+}
+
+export const WAVES: WaveDef[] = buildWaveTable();
 
 // ---------------------------------------------------------------------------
 // Endless mode (round 8): waves past WAVES.length (5) don't exist as static
@@ -840,13 +1045,23 @@ export function getWaveDef(waveNumber: number): WaveDef {
     ENDLESS.maxBudgetScale,
     1 + ENDLESS.budgetGrowthPerWavePastFive * (waveNumber - WAVES.length),
   );
+  // Phase 3: endless mode (wave 26+) now synthesizes off wave 25 (WAVES'
+  // final entry) instead of wave 5's — its `boss`/`bossArchetype` fields
+  // are wave 25's, i.e. the Apex boss, so a deep endless run keeps facing
+  // Apex-scaled-up encounters repeatedly rather than reverting to an
+  // earlier, easier boss. That's a judgment call carried over unchanged
+  // from the prototype's existing pattern (endless always re-fights the
+  // LAST authored boss) — see DECISIONS.md.
   return {
     wave: waveNumber,
     grunts: Math.round(base.grunts * budgetScale),
     archers: Math.round(base.archers * budgetScale),
     rushers: Math.round(base.rushers * budgetScale),
     bombers: Math.round(base.bombers * budgetScale),
+    healers: Math.round(base.healers * budgetScale),
+    fireMages: Math.round(base.fireMages * budgetScale),
     boss: base.boss,
+    bossArchetype: base.bossArchetype,
     durationSec: base.durationSec,
     intermissionSec: base.intermissionSec,
   };

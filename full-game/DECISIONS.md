@@ -306,3 +306,160 @@ the actual Digit1/Digit2 keys while playing (the underlying
 `classSlot1Weapon`/`classSlot2Weapon`/`switchWeapon` calls were exercised
 directly and confirmed correct; the keyboard path around them during live
 gameplay was not separately driven end-to-end).
+
+## Phase 3 — 25-wave economy, 5 bosses, and the scoring system
+
+### 25-wave budget/mix table
+
+`config.ts::buildWaveTable()` replaces Phase 1's 13-wave hand-typed
+placeholder. Rather than 25 hand-authored literal rows, it's generated once
+at module load from a small `WAVE_ECONOMY` constant block (total budget at
+wave 1, a per-wave growth rate, and each archetype's target mix share once
+its intro wave is reached) — still "pure data" from every consumer's view
+(`WAVES` is a plain `WaveDef[]`; nothing downstream calls the generator),
+but retuning the whole curve is editing a handful of numbers instead of 25
+rows. `budgetGrowthPerWave: 1.1` and `budgetCap: 260` were picked to land
+in the same rough neighborhood as the old endless-mode escalation (1.12)
+while giving wave 25 a clearly "endgame" budget (66 grunts + 66 archers +
+38 rushers + 24 bombers + 19 healers + 24 fire mages, per the live-verified
+table) without spiraling unboundedly. Archetype mix shares (archer 28%,
+rusher 16%, bomber 10%, healer 8%, fire mage 10%, grunt absorbs the rest)
+are a judgment call, not derived from anything in the brief — flagged for
+rebalancing once there's actual playtesting to judge composition-feel
+against. Verified live: the generated table has exactly 25 rows, correct
+intro-wave gating per archetype, and the exact boss archetype at 5/10/15/
+20/25.
+
+### 5 bosses
+
+One boss per milestone wave (`BOSS_WAVES` in config.ts, read via the new
+`WaveDef.bossArchetype` field that `SpawnDirector` now requests instead of
+a hardcoded `'boss'` kind):
+
+- **Wave 5 — Warlord** (`boss`): the prototype's original boss, unchanged,
+  no special ability. Deliberately the simplest of the 5 — a first boss
+  fight should teach "big HP bar, hits hard," not a mechanic layered on
+  top.
+- **Wave 10 — Siegebreaker** (`bossSiege`): a kiter (like the archer) that
+  periodically slams the ground in an AoE — punishes a melee-only build
+  that tries to stand and trade rather than respecting its ranged attack.
+- **Wave 15 — "Summoner"** (`bossSummoner`, name coincidentally shared with
+  the player's Summoner class — unrelated): periodically calls in grunt
+  reinforcements at its own position, turning the fight into an
+  add-management problem as much as a damage race.
+- **Wave 20 — Inferno** (`bossInferno`): periodically drops a burning-ground
+  pulse under itself (literally reusing the fire mage's burning-ground
+  mechanic at a bigger radius/DPS) — area denial around a melee-range
+  boss.
+- **Wave 25 — Apex** (`bossApex`): the finale, combining a slam AND
+  periodic reinforcements (a rusher pair, so the adds arrive fast) plus a
+  one-time enrage past 40% HP (1.3x speed and damage). Deliberately
+  "everything you've learned, combined" rather than a wholly new 4th
+  mechanic — a genuinely novel finale mechanic felt like scope better spent
+  making the combination fight well.
+
+**Implementation**: `config.ts::BossAbilityDef` is one shape covering all
+4 ability types (`slam`/`summonAdds`/`burnPulse`/`enrageAtLowHp`), and a
+boss can have any number of them (`EnemyDef.bossAbilities: BossAbilityDef[]`
+— Apex has 3). Abilities are ticked centrally in
+`game.ts::updateBossAbilities`, mirroring Phase 1's bomber-fuse pattern
+(driven outside AI behavior code, once per live boss per tick), and reuse
+the exact same `combat/areaDamage.ts`/`Game.groundEffects`/
+`spawnEnemyFromRequest` machinery Phases 1-2 already built — no new damage
+or spawning pathway was needed for any of the 4 ability types. Ability
+damage/DPS fields scale with generation/difficulty/endless exactly like a
+normal attack; `summonCount`/radii/durations/thresholds are left
+un-scaled (a bigger-generation boss should hit harder, not summon more
+adds or leave bigger fire — a judgment call). Verified live: all 5 bosses
+spawn with correctly scaled HP and their configured ability list; Apex's
+slam cooldown cycles, summonAdds spawns exactly 2 rushers at its 10s mark
+(isolated from the game's own ambient wave-1 spawning, which was
+confirmed as the source of extra entity-count noise in an earlier,
+non-isolated version of this test), and forcing HP below the 40% enrage
+threshold immediately applies the exact 1.3x speed/damage multiplier
+exactly once (confirmed via before/after exact-number matching).
+
+**Endless mode past wave 25** now synthesizes off wave 25 (Apex) instead
+of the old wave 5 — a deep endless run re-fights an ever-scaling Apex
+repeatedly rather than reverting to an easier boss. This is the existing
+prototype pattern (endless always re-fights the LAST authored boss)
+carried forward unchanged, not a new decision, but worth flagging since
+"endless Apex forever" is a much bigger ask than "endless Warlord forever"
+was.
+
+### Scoring system — placement and design
+
+**Placement**: folded into Phase 3 (per the coordinator's instruction to
+place it "once waves/bosses exist, whichever is the more natural point")
+because the Tempo component needs a wave's authored `durationSec` as its
+par time and the Command/Economy component's coin-par needs a wave's full
+archetype roster — both only became meaningful once the real 25-wave table
+existed, not Phase 1's placeholder one.
+
+**Architecture**: `economy/scoring.ts` is pure functions only
+(`computeWaveScore`, `computeRunGrade`, `waveCoinsPar`) — no Game/entity
+access, so a headless harness can call them directly with plain data.
+`game.ts` owns the per-tick bookkeeping (`waveElapsedSec`/`waveKillCount`/
+`waveCoinsEarned` accumulators, reset each wave) since it's the only place
+with simultaneous access to core/player HP, kill events, coin drops and
+wave timing.
+
+**The 5 components** (200 points each, none of the exact weightings or
+formulas were specified by the brief beyond naming the 5 categories — all
+of the below are judgment calls, flagged for rebalancing):
+- **Integrity** = `200 * coreHpFrac` at wave end.
+- **Tempo** = `200 * clamp(1 - overParFraction)`, where a wave finishing at
+  or under its authored `durationSec` scores full marks, linearly losing
+  credit down to 0 at 2x that duration.
+- **Survival** = `200 * playerHpFrac` at wave end (naturally 0 if the
+  player died that wave).
+- **Command/Economy** = `100 * allyRatio + 100 * coinRatio`, where
+  `allyRatio` compares allies alive at wave end to `spawnerCapacity *
+  spawnerCount` (a "how full is your base's ally roster" reference) and
+  `coinRatio` compares actual coins earned this wave to `waveCoinsPar()` (a
+  computed expected-income figure from the wave's archetype roster's
+  midpoint coin values — see that function's doc comment for why it's a
+  deliberately un-generation-scaled, conservative par).
+- **Mastery** = `200 * (enemiesKilled / enemiesSpawned)` this wave — "did
+  anything leak/get left alive when the wave ended," the most literal
+  reading of "mastery" available from data phases 1-3 actually track (no
+  accuracy/headshot-style stats exist in this codebase to score against
+  instead).
+
+**Run grade**: a weighted average of every scored wave's total, weight =
+`1 + wave/25` (matching the brief's formula exactly), normalized to a 0-100%
+and mapped to SS/S/A/B/C/D/F letter bands (97/90/80/65/45/25 cutoffs — a
+judgment call, not specified). **Two hard gates**, both judgment calls
+since the brief named "hard gates on SS/S/defeat-caps-at-C" without pinning
+down exact conditions:
+- **Defeat caps the letter at C**, full stop, regardless of the numeric
+  percentage — implemented as a one-way downgrade (`capAt`), so a run that
+  would already grade D or F on numbers isn't artificially raised, only a
+  better-than-C numeric grade gets capped down.
+- **SS additionally requires a "flawless" mastery record** — every scored
+  wave's Mastery component at least 199/200 (essentially zero leaked
+  kills across the whole run). Failing that gate caps the letter at S
+  instead. (No equivalent extra gate was added for S beyond the shared
+  defeat cap — the brief only named SS and S as gated, and a second,
+  different S-specific condition felt like inventing requirements beyond
+  what was asked.)
+
+**Presentation**: an intermission-only score panel (`drawScorePanel`)
+shows the wave that just ended's full 5-component breakdown plus the
+current run grade; the game-over screen shows the final run grade,
+percentage, and whether a hard gate applied. **Headless-sandbox-friendly
+logging**: every wave's breakdown is `console.log`'d with a `[SCORE]` tag
+(all 5 components separately, not just the total) at the moment it's
+computed, and the full history is kept on `game.scoreHistory` — reachable
+from a driving script via the pre-existing `window.game` escape hatch — so
+a non-rendering harness can read every component of every wave without
+ever touching the canvas.
+
+**Verified live**: forcing 3 wave transitions via the F4 debug key produced
+exactly 3 `[SCORE]` console lines and 3 `scoreHistory` entries with correct
+per-wave totals and a correctly-computed weighted run grade; direct calls
+to `computeRunGrade` confirmed both hard gates fire exactly as designed
+(a numerically-perfect 1000/1000 history grades "C" when `defeated: true`
+is passed, and a near-perfect history with one wave's Mastery at 150/200
+grades "S" instead of "SS" even though its raw percentage alone would
+clear the SS cutoff).

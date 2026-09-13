@@ -102,6 +102,9 @@ export function createEnemy(
   if (def.fireMage) {
     e.fireMage = { ...def.fireMage, cooldown: 0 };
   }
+  if (def.bossAbilities) {
+    e.bossAbilities = def.bossAbilities.map((a) => ({ def: a, cooldownRemaining: a.cooldown, triggered: false }));
+  }
   e.coinValue = Math.round((def.coinsMin + def.coinsMax) / 2);
   e.speedStat = def.speed;
   e.aggroRadius = def.aggroRadius;

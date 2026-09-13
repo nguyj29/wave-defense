@@ -59,6 +59,7 @@ import {
   type ShopLevels,
 } from './economy/shop.ts';
 import { printDevReadout } from './economy/devReadout.ts';
+import { computeRunGrade, computeWaveScore, waveCoinsPar, type RunGradeResult, type WaveScoreBreakdown } from './economy/scoring.ts';
 import { FIXED_DT, GameLoop } from './engine/loop.ts';
 import { SpatialGrid } from './engine/grid.ts';
 import { Input } from './input.ts';
@@ -206,6 +207,16 @@ export class Game {
   // only draws it while > 0.
   endlessBannerTimer = 0;
 
+  // Phase 3 scoring — see economy/scoring.ts for the pure-function math;
+  // these are the per-run/per-wave accumulators only game.ts needs to own
+  // (it's the only place with access to core/player HP, kill events, coin
+  // drops, and wave timing all at once).
+  scoreHistory: WaveScoreBreakdown[] = [];
+  runDefeated = false;
+  private waveElapsedSec = 0;
+  private waveKillCount = 0;
+  private waveCoinsEarned = 0;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     const ctx = canvas.getContext('2d');
@@ -281,6 +292,11 @@ export class Game {
     this.camera.zoom = 1.0;
     this.gameOverInfo = null;
     this.endlessBannerTimer = 0;
+    this.scoreHistory = [];
+    this.runDefeated = false;
+    this.waveElapsedSec = 0;
+    this.waveKillCount = 0;
+    this.waveCoinsEarned = 0;
     this.debug.godMode = false;
     setGodMode(false);
     this.phase = 'playing';
@@ -554,6 +570,15 @@ export class Game {
       }
     }
 
+    // Boss special abilities (Phase 3) — same "drive it centrally, outside
+    // AI behavior code" pattern as the bomber's fuse above. Only ticks for
+    // live bosses (unlike the bomber fuse, no ability needs to keep running
+    // after its boss has died).
+    for (const e of this.entities) {
+      if (!e.isBoss || e.dead || !e.bossAbilities) continue;
+      this.updateBossAbilities(e, dt);
+    }
+
     // Movement integration + collision resolution (player/ally/enemy only).
     const movers = liveUnits.filter((e) => e.kind !== 'core');
     integrateAndResolve(movers, this.obstacles, this.obstacleGrid, this.unitGrid, dt);
@@ -575,6 +600,7 @@ export class Game {
       if (e.kind === 'enemy' && e.dead && e.coinsMin !== undefined && !this.deathHandled.has(e.id)) {
         this.deathHandled.add(e.id);
         this.spawnDirector.registerKill();
+        this.waveKillCount++; // Phase 3 scoring: Mastery component — see onWaveEnd()
         const gemChance = effectiveGemChance(this.shopLevels, !!e.isBoss);
         if (Math.random() < gemChance) {
           // Gems are a flat, rare-drop bonus — deliberately NOT scaled by
@@ -583,11 +609,14 @@ export class Game {
           // per-kill coin curve, not part of it. Difficulty's rewardMult
           // still applies (round 6) — higher-difficulty runs pay out more
           // across the board to compensate the added risk.
-          this.entities.push(createCoin(e.x, e.y, Math.round(GEM.coinValue * rewardMult), true));
+          const value = Math.round(GEM.coinValue * rewardMult);
+          this.entities.push(createCoin(e.x, e.y, value, true));
+          this.waveCoinsEarned += value; // Phase 3 scoring: Command/Economy component
         } else {
           const base = e.coinsMin + Math.random() * ((e.coinsMax ?? e.coinsMin) - e.coinsMin);
           const value = Math.round(base * (1 + this.currentWaveCoinBonus) * rewardMult);
           this.entities.push(createCoin(e.x, e.y, value));
+          this.waveCoinsEarned += value;
         }
       }
     }
@@ -624,6 +653,11 @@ export class Game {
     if (this.player.dead || this.core.dead) {
       this.gameOverInfo = { waveReached: wm.waveIndex + 1, coins: this.coins };
       this.phase = 'gameover';
+      // Phase 3 scoring: score the partial wave the run died on (best-effort
+      // with whatever was tracked so far) and mark the run as defeated —
+      // computeRunGrade's hard "defeat caps at C" gate reads runDefeated.
+      if (wm.phase === 'running') this.onWaveEnd();
+      this.runDefeated = true;
     }
 
     // --- Wave / spawn direction -----------------------------------------
@@ -638,6 +672,10 @@ export class Game {
     // the timer itself is the spawn cutoff now, so it's redundant.
     const aliveEnemies = this.entities.filter((e) => e.kind === 'enemy' && !e.dead).length;
     if (wm.phase === 'running') {
+      // Phase 3 scoring: Tempo component's actual-clear-time input — only
+      // accumulates while a wave is actively running (paused during
+      // intermission automatically, since this block doesn't execute then).
+      this.waveElapsedSec += dt;
       const requests = this.spawnDirector.update(dt, aliveEnemies);
       for (const req of requests) this.spawnEnemyFromRequest(req.kind, req.x, req.y);
 
@@ -658,6 +696,11 @@ export class Game {
     }
 
     const changed = wm.update(dt, aliveEnemies);
+    // Phase 3 scoring: score the wave that just finished at the moment it
+    // transitions OUT of 'running' (into intermission) — this is the one
+    // place waveIndex still refers to the wave that just ended (it only
+    // increments later, when intermission's own countdown elapses).
+    if (changed && wm.phase === 'intermission') this.onWaveEnd();
     if (changed && wm.phase === 'running') this.onWaveTransition(wm.pendingEarlyCallBonus);
 
     // Round 8: endless-mode banner countdown (see endlessBannerTimer/
@@ -683,6 +726,55 @@ export class Game {
       this.waveManager.justEnteredEndless = false;
       this.endlessBannerTimer = 3.5;
     }
+  }
+
+  /**
+   * Phase 3 scoring: computes and records the score for the wave that just
+   * finished (still `this.waveManager.currentWave` at the moment this is
+   * called — see the two call sites' comments). Resets the per-wave
+   * accumulators for the next wave. Logs the full breakdown to the console
+   * (tagged `[SCORE]`) so a headless/sandbox harness driving this game via
+   * injected JS (no canvas rendering) can read every component separately
+   * without screen-scraping — the same data is also kept in
+   * `this.scoreHistory` for `window.game.scoreHistory` inspection.
+   */
+  private onWaveEnd(): void {
+    const wave = this.waveManager.currentWave;
+    const enemiesSpawned = this.spawnDirector.budgetSpent;
+    const coinsPar = waveCoinsPar(wave);
+    const alliesPar = spawnerCapacity(this.shopLevels) * this.spawners.length;
+    const alliesAliveAtEnd = this.entities.filter((e) => e.kind === 'ally' && !e.dead).length;
+    const breakdown = computeWaveScore({
+      wave: wave.wave,
+      coreHpFrac: this.core.health ? this.core.health.hp / this.core.health.maxHp : 0,
+      playerHpFrac: this.player.health ? this.player.health.hp / this.player.health.maxHp : 0,
+      clearTimeSec: this.waveElapsedSec,
+      parTimeSec: wave.durationSec,
+      enemiesSpawned,
+      enemiesKilled: this.waveKillCount,
+      coinsEarnedThisWave: this.waveCoinsEarned,
+      coinsParThisWave: coinsPar,
+      alliesAliveAtEnd,
+      alliesPar,
+    });
+    this.scoreHistory.push(breakdown);
+    // eslint-disable-next-line no-console -- intentional: this IS the headless-sandbox-facing log line, see doc comment above
+    console.log(`[SCORE] wave ${breakdown.wave}`, {
+      integrity: Math.round(breakdown.integrity),
+      tempo: Math.round(breakdown.tempo),
+      survival: Math.round(breakdown.survival),
+      commandEconomy: Math.round(breakdown.commandEconomy),
+      mastery: Math.round(breakdown.mastery),
+      total: Math.round(breakdown.total),
+    });
+    this.waveElapsedSec = 0;
+    this.waveKillCount = 0;
+    this.waveCoinsEarned = 0;
+  }
+
+  /** Phase 3 scoring: current run grade from every wave scored so far — see economy/scoring.ts. */
+  currentRunGrade(): RunGradeResult {
+    return computeRunGrade(this.scoreHistory, this.runDefeated);
   }
 
   /** Difficulty spawnRateMult composed with the endless-wave escalation factor (round 8) — see DECISIONS.md. */
@@ -756,7 +848,10 @@ export class Game {
     const diff = DIFFICULTY[this.difficulty];
     const waveNumber = this.waveManager.waveIndex + 1;
     const endless = endlessFactor(waveNumber);
-    const isBoss = kind === 'boss';
+    // Phase 3: any of the 5 boss archetypes counts as "the boss" for
+    // generation-offset purposes (generationForWave(wave, 1)), not just the
+    // literal 'boss' key.
+    const isBoss = ENEMIES[kind].isBoss ?? false;
     const generation = pickSpawnGeneration(waveNumber, isBoss);
     const gen = generationScale(generation);
     const def = ENEMIES[kind];
@@ -790,6 +885,17 @@ export class Game {
         burnDps: def.fireMage.burnDps * gen.hpDmg * diff.enemyDmgMult * endless,
       };
     }
+    if (def.bossAbilities) {
+      // Phase 3: scale each ability's own damage-shaped fields by the same
+      // hpDmg*difficulty*endless factor as everything else — summonCount,
+      // radii, durations and thresholds are left as authored (a bigger
+      // generation boss shouldn't summon MORE adds, just hit harder).
+      override.bossAbilities = def.bossAbilities.map((a) => ({
+        ...a,
+        damage: a.damage !== undefined ? Math.round(a.damage * gen.hpDmg * diff.enemyDmgMult * endless) : undefined,
+        burnDps: a.burnDps !== undefined ? a.burnDps * gen.hpDmg * diff.enemyDmgMult * endless : undefined,
+      }));
+    }
     // Round 8: hue-shift the archetype's base color warmer, proportional to a
     // combined "power level" from BOTH difficulty and endless-wave scaling
     // (enemyHpMult is the primary driver — see DECISIONS.md for the exact
@@ -807,6 +913,63 @@ export class Game {
     const warmth = Math.max(0, 1 - 1 / powerLevel);
     override.color = warmHexColor(applyGenerationHue(def.color, generation), warmth);
     this.entities.push(createEnemy(kind, x, y, override, generation));
+  }
+
+  /**
+   * Phase 3: ticks one boss's special abilities and fires any that are
+   * ready. Each ability type is a small, self-contained effect; adding a
+   * 6th boss with a novel ability means adding one more `case` here plus a
+   * BossAbilityDef variant in config.ts — no other system needs to change.
+   */
+  private updateBossAbilities(boss: Entity, dt: number): void {
+    for (const ability of boss.bossAbilities ?? []) {
+      const def = ability.def;
+      if (def.type === 'enrageAtLowHp') {
+        if (ability.triggered || !boss.health) continue;
+        const frac = boss.health.hp / boss.health.maxHp;
+        if (frac > (def.hpThresholdFraction ?? 0.4)) continue;
+        ability.triggered = true;
+        boss.speedStat = (boss.speedStat ?? 0) * (def.speedMult ?? 1);
+        if (boss.melee) boss.melee.damage *= def.dmgMult ?? 1;
+        if (boss.ranged) boss.ranged.damage *= def.dmgMult ?? 1;
+        playSfx('bomberFuse'); // reuse the rising-pitch tell as an "uh oh, it's enraging" cue
+        continue;
+      }
+
+      ability.cooldownRemaining -= dt;
+      if (ability.cooldownRemaining > 0) continue;
+      ability.cooldownRemaining = def.cooldown;
+
+      switch (def.type) {
+        case 'slam':
+          applyAreaDamage(this.entities, boss.x, boss.y, def.radius ?? 150, def.damage ?? 20, 0.35, 'enemy', boss.id);
+          playSfx('bomberDetonate');
+          break;
+        case 'summonAdds': {
+          const count = def.summonCount ?? 2;
+          const archetype = def.summonArchetype ?? 'grunt';
+          for (let i = 0; i < count; i++) {
+            const angle = (i / count) * Math.PI * 2;
+            this.spawnEnemyFromRequest(archetype, boss.x + Math.cos(angle) * (boss.radius + 30), boss.y + Math.sin(angle) * (boss.radius + 30));
+          }
+          playSfx('allySummon'); // distinct "something arrived" cue — reused, not boss-specific by design (see DECISIONS.md)
+          break;
+        }
+        case 'burnPulse':
+          this.groundEffects.push({
+            x: boss.x,
+            y: boss.y,
+            radius: def.burnRadius ?? 150,
+            dps: def.burnDps ?? 5,
+            enemyFalloff: 0.35,
+            ownerFaction: 'enemy',
+            timer: def.burnDuration ?? 4,
+            maxTimer: def.burnDuration ?? 4,
+          });
+          playSfx('fireballImpact');
+          break;
+      }
+    }
   }
 
   // -------------------------------------------------------------------
@@ -831,7 +994,9 @@ export class Game {
       // Round 6: WaveManager.update() no longer force-ends 'running' on its
       // own (it's gated on aliveEnemies === 0 now) — use the dedicated debug
       // bypass so this dev shortcut still unconditionally skips the wave.
+      const wasRunning = this.waveManager.phase === 'running';
       const changed = this.waveManager.debugForceAdvance();
+      if (changed && wasRunning) this.onWaveEnd(); // Phase 3 scoring: score the skipped wave too, for a consistent debug flow
       if (changed && this.waveManager.phase === 'running') this.onWaveTransition(this.waveManager.pendingEarlyCallBonus);
     }
     if (input.wasPressed('F6')) {
@@ -994,6 +1159,7 @@ export class Game {
       spawningStopped: this.spawnDirector.spawningStopped,
     };
     drawHud(ctx, w, h, hudData);
+    if (this.waveManager.phase === 'intermission') this.drawScorePanel();
     drawMinimap(
       ctx,
       w,
@@ -1091,13 +1257,67 @@ export class Game {
     ctx.textAlign = 'center';
     ctx.font = 'bold 80px sans-serif';
     const info = this.gameOverInfo;
-    ctx.fillText('GAME OVER', w / 2, h / 2 - 100);
+    ctx.fillText('GAME OVER', w / 2, h / 2 - 160);
     ctx.font = '36px sans-serif';
-    ctx.fillText(`Wave reached: ${info?.waveReached ?? 1}`, w / 2, h / 2 - 10);
-    ctx.fillText(`Coins collected: ${info?.coins ?? 0}`, w / 2, h / 2 + 42);
+    ctx.fillText(`Wave reached: ${info?.waveReached ?? 1}`, w / 2, h / 2 - 70);
+    ctx.fillText(`Coins collected: ${info?.coins ?? 0}`, w / 2, h / 2 - 22);
+
+    // Phase 3: run-end grade presentation.
+    const grade = this.currentRunGrade();
+    ctx.font = 'bold 56px sans-serif';
+    ctx.fillStyle = '#ffd766';
+    ctx.fillText(`Run Grade: ${grade.letter}`, w / 2, h / 2 + 46);
+    ctx.font = '24px sans-serif';
+    ctx.fillStyle = '#cfd8e3';
+    ctx.fillText(
+      `${grade.weightedAveragePct.toFixed(1)}% weighted average over ${this.scoreHistory.length} scored wave(s)` +
+        (grade.gated ? ' — capped by a hard gate (see DECISIONS.md)' : ''),
+      w / 2,
+      h / 2 + 82,
+    );
+
     ctx.font = '32px sans-serif';
     ctx.fillStyle = '#9fd3ff';
-    ctx.fillText('Press R to restart', w / 2, h / 2 + 106);
+    ctx.fillText('Press R to restart', w / 2, h / 2 + 140);
     ctx.textAlign = 'left';
+  }
+
+  /**
+   * Phase 3: intermission-only readout of the wave that just ended (full
+   * 5-component breakdown) plus the run's current grade so far — the
+   * in-game counterpart to the `[SCORE]` console log written by
+   * onWaveEnd(). Drawn directly here (not via ui/hud.ts's typed HudData)
+   * since it's a self-contained, occasional overlay rather than an
+   * always-on HUD element.
+   */
+  private drawScorePanel(): void {
+    const last = this.scoreHistory[this.scoreHistory.length - 1];
+    if (!last) return;
+    const ctx = this.ctx;
+    const w = this.camera.screenWidth;
+    const x = w / 2 - 260;
+    const y = 90;
+    const grade = this.currentRunGrade();
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillRect(x, y, 520, 200);
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+    ctx.strokeRect(x, y, 520, 200);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ffd766';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.fillText(`Wave ${last.wave} Score: ${Math.round(last.total)}/1000`, x + 16, y + 30);
+    ctx.font = '18px sans-serif';
+    ctx.fillStyle = '#e8e8e8';
+    const lines = [
+      `Integrity ${Math.round(last.integrity)}/200   Tempo ${Math.round(last.tempo)}/200`,
+      `Survival ${Math.round(last.survival)}/200   Command/Econ ${Math.round(last.commandEconomy)}/200`,
+      `Mastery ${Math.round(last.mastery)}/200`,
+    ];
+    lines.forEach((line, i) => ctx.fillText(line, x + 16, y + 62 + i * 26));
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillStyle = '#9fd3ff';
+    ctx.fillText(`Run grade so far: ${grade.letter} (${grade.weightedAveragePct.toFixed(1)}%)`, x + 16, y + 160);
+    ctx.restore();
   }
 }

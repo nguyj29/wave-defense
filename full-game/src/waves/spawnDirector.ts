@@ -1,7 +1,10 @@
 import { activeSpawnPoints, type SpawnPoint } from '../world/map.ts';
-import { CORE, SPAWN_DIRECTOR, type WaveDef } from '../config.ts';
+import { CORE, SPAWN_DIRECTOR, type EnemyArchetypeId, type WaveDef } from '../config.ts';
 
-export type SpawnKind = 'grunt' | 'archer' | 'rusher' | 'bomber' | 'healer' | 'fireMage' | 'boss';
+// Phase 3: a boss spawn request's `kind` is whatever `wave.bossArchetype`
+// names (one of the 5 boss archetypes in config.ts::ENEMIES) — SpawnKind is
+// simply every enemy archetype id.
+export type SpawnKind = EnemyArchetypeId;
 
 export interface SpawnRequest {
   kind: SpawnKind;
@@ -49,6 +52,8 @@ export class SpawnDirector {
   spawnedArchers = 0;
   spawnedRushers = 0;
   spawnedBombers = 0;
+  spawnedHealers = 0;
+  spawnedFireMages = 0;
   bossSpawned = false;
   bossWarningActive = false;
   private bossWarningTimer = 0;
@@ -79,10 +84,18 @@ export class SpawnDirector {
   }
 
   get budgetSpent(): number {
-    return this.spawnedGrunts + this.spawnedArchers + this.spawnedRushers + this.spawnedBombers + (this.bossSpawned ? 1 : 0);
+    return (
+      this.spawnedGrunts +
+      this.spawnedArchers +
+      this.spawnedRushers +
+      this.spawnedBombers +
+      this.spawnedHealers +
+      this.spawnedFireMages +
+      (this.bossSpawned ? 1 : 0)
+    );
   }
   get budgetTotal(): number {
-    return this.wave.grunts + this.wave.archers + this.wave.rushers + this.wave.bombers + this.wave.boss;
+    return this.wave.grunts + this.wave.archers + this.wave.rushers + this.wave.bombers + this.wave.healers + this.wave.fireMages + this.wave.boss;
   }
   get isBudgetExhausted(): boolean {
     return (
@@ -90,6 +103,8 @@ export class SpawnDirector {
       this.spawnedArchers >= this.wave.archers &&
       this.spawnedRushers >= this.wave.rushers &&
       this.spawnedBombers >= this.wave.bombers &&
+      this.spawnedHealers >= this.wave.healers &&
+      this.spawnedFireMages >= this.wave.fireMages &&
       (this.wave.boss === 0 || this.bossSpawned)
     );
   }
@@ -139,8 +154,10 @@ export class SpawnDirector {
 
     // Boss telegraph/spawn timing, independent of the clump/pause cycle.
     if (spawningAllowed && this.wave.boss > 0 && !this.bossSpawned && !this.bossWarningActive) {
-      const spawnedSoFar = this.spawnedGrunts + this.spawnedArchers + this.spawnedRushers + this.spawnedBombers;
-      const nonBossBudget = this.wave.grunts + this.wave.archers + this.wave.rushers + this.wave.bombers;
+      const spawnedSoFar =
+        this.spawnedGrunts + this.spawnedArchers + this.spawnedRushers + this.spawnedBombers + this.spawnedHealers + this.spawnedFireMages;
+      const nonBossBudget =
+        this.wave.grunts + this.wave.archers + this.wave.rushers + this.wave.bombers + this.wave.healers + this.wave.fireMages;
       const budgetTrigger = nonBossBudget > 0 && spawnedSoFar / nonBossBudget >= SPAWN_DIRECTOR.bossBudgetFraction;
       const timeTrigger = this.elapsed >= SPAWN_DIRECTOR.bossLatestSec;
       if (budgetTrigger || timeTrigger) {
@@ -156,7 +173,7 @@ export class SpawnDirector {
     }
     if (this.bossReadyToSpawn && !this.bossSpawned) {
       const sp = this.currentSpawnPoint();
-      requests.push({ kind: 'boss', x: sp.x, y: sp.y });
+      requests.push({ kind: this.wave.bossArchetype, x: sp.x, y: sp.y });
       this.bossSpawned = true;
       this.bossWarningActive = false;
       this.bossReadyToSpawn = false;
@@ -177,6 +194,8 @@ export class SpawnDirector {
           else if (kind === 'archer') this.spawnedArchers++;
           else if (kind === 'rusher') this.spawnedRushers++;
           else if (kind === 'bomber') this.spawnedBombers++;
+          else if (kind === 'healer') this.spawnedHealers++;
+          else if (kind === 'fireMage') this.spawnedFireMages++;
           this.clumpSpawnedInClump++;
           if (this.clumpSpawnedInClump >= this.clumpTarget) {
             this.advanceToNextClump();
@@ -209,13 +228,15 @@ export class SpawnDirector {
    * nonzero budget for — extending WaveDef with a new archetype field needs
    * no change here.
    */
-  private pickNextKind(): 'grunt' | 'archer' | 'rusher' | 'bomber' | null {
-    type NonBossKind = 'grunt' | 'archer' | 'rusher' | 'bomber';
+  private pickNextKind(): 'grunt' | 'archer' | 'rusher' | 'bomber' | 'healer' | 'fireMage' | null {
+    type NonBossKind = 'grunt' | 'archer' | 'rusher' | 'bomber' | 'healer' | 'fireMage';
     const all: { kind: NonBossKind; left: number }[] = [
       { kind: 'grunt', left: this.wave.grunts - this.spawnedGrunts },
       { kind: 'archer', left: this.wave.archers - this.spawnedArchers },
       { kind: 'rusher', left: this.wave.rushers - this.spawnedRushers },
       { kind: 'bomber', left: this.wave.bombers - this.spawnedBombers },
+      { kind: 'healer', left: this.wave.healers - this.spawnedHealers },
+      { kind: 'fireMage', left: this.wave.fireMages - this.spawnedFireMages },
     ];
     const remaining = all.filter((r) => r.left > 0);
     if (remaining.length === 0) return null;
@@ -235,7 +256,7 @@ export class SpawnDirector {
     this.bossWarningActive = false;
     this.bossReadyToSpawn = false;
     const sp = this.currentSpawnPoint();
-    return { kind: 'boss', x: sp.x, y: sp.y };
+    return { kind: this.wave.bossArchetype, x: sp.x, y: sp.y };
   }
 
   private currentSpawnPoint(): { x: number; y: number } {

@@ -5,6 +5,8 @@
 // bullet fired by an enemy and one fired by the player share the exact same
 // damage/collision path.
 
+import type { BossAbilityDef } from '../config.ts';
+
 export type Faction = 'player' | 'enemy';
 export type EntityKind = 'player' | 'ally' | 'enemy' | 'projectile' | 'coin' | 'core';
 // chevron/diamond/concaveQuad/squatSquare added for Phase 1's new archetypes
@@ -95,6 +97,17 @@ export interface FireMageAttack {
   enemyFalloff: number;
 }
 
+// Phase 3: a boss's runtime ability state — `def` is the (already
+// generation/difficulty/endless-scaled, see game.ts::spawnEnemyFromRequest)
+// config, `cooldownRemaining` counts down for repeating abilities
+// (slam/summonAdds/burnPulse), `triggered` latches once for the one-shot
+// 'enrageAtLowHp'. See game.ts::updateBossAbilities.
+export interface RuntimeBossAbility {
+  def: BossAbilityDef;
+  cooldownRemaining: number;
+  triggered: boolean;
+}
+
 export interface ProjectileData {
   damage: number;
   ownerFaction: Faction;
@@ -141,6 +154,7 @@ export interface Entity {
   fuseTimer?: number; // bomber only: seconds remaining until detonation, once lit
   fuseDetonated?: boolean; // bomber only: true once detonation has actually fired (guards double-detonation & keeps the corpse alive in the entity list until it does)
   healingTargetIds?: number[]; // healer only: ids currently being healed this tick, for the tether-line render (entities/behaviors/healer.ts)
+  bossAbilities?: RuntimeBossAbility[]; // bosses only (Phase 3) — see game.ts::updateBossAbilities
   summonedByPlayer?: boolean;
   spawnerId?: number;
   coinValue?: number;
