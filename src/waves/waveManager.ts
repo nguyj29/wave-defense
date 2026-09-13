@@ -1,0 +1,70 @@
+import { EARLY_CALL, WAVES, type WaveDef } from '../config.ts';
+
+export type WavePhase = 'running' | 'intermission' | 'allWavesComplete';
+
+/**
+ * Owns wave/intermission timers and phase transitions only — it knows
+ * nothing about entities or spawning. game.ts drives a SpawnDirector during
+ * the 'running' phase and asks this class when the phase should change.
+ */
+export class WaveManager {
+  waveIndex = 0; // 0-based into WAVES
+  phase: WavePhase = 'running';
+  timeRemaining = WAVES[0].durationSec;
+  /** Coin multiplier bonus (0..0.25) earned by skipping the last intermission, applied to the wave about to start. */
+  pendingEarlyCallBonus = 0;
+
+  get currentWave(): WaveDef {
+    return WAVES[this.waveIndex];
+  }
+
+  /** Advance timers. Returns true if the phase changed this tick (caller should react). */
+  update(dt: number): boolean {
+    if (this.phase === 'allWavesComplete') return false;
+    this.timeRemaining -= dt;
+    if (this.timeRemaining <= 0) {
+      this.timeRemaining = 0;
+      if (this.phase === 'running') {
+        this.phase = 'intermission';
+        this.timeRemaining = this.currentWave.intermissionSec;
+        return true;
+      } else {
+        this.advanceToNextWave(0);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Player pressed Space during intermission. Returns the coin bonus earned (0..0.25). */
+  skipIntermission(): number {
+    if (this.phase !== 'intermission') return 0;
+    const secondsSkipped = this.timeRemaining;
+    const bonus = Math.min(secondsSkipped * EARLY_CALL.bonusPerSecond, EARLY_CALL.maxBonus);
+    this.advanceToNextWave(bonus);
+    return bonus;
+  }
+
+  currentEarlyCallBonusPreview(): number {
+    if (this.phase !== 'intermission') return 0;
+    return Math.min(this.timeRemaining * EARLY_CALL.bonusPerSecond, EARLY_CALL.maxBonus);
+  }
+
+  private advanceToNextWave(bonus: number): void {
+    this.pendingEarlyCallBonus = bonus;
+    if (this.waveIndex >= WAVES.length - 1) {
+      this.phase = 'allWavesComplete';
+      return;
+    }
+    this.waveIndex++;
+    this.phase = 'running';
+    this.timeRemaining = this.currentWave.durationSec;
+  }
+
+  reset(): void {
+    this.waveIndex = 0;
+    this.phase = 'running';
+    this.timeRemaining = WAVES[0].durationSec;
+    this.pendingEarlyCallBonus = 0;
+  }
+}
