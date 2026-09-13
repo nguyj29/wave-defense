@@ -41,7 +41,7 @@ export interface RangedAttack {
   kiteDistance?: number;
 }
 
-export type AllyBehaviorState = 'seekEnemy' | 'advance' | 'attack';
+export type AllyBehaviorState = 'advance' | 'attack' | 'returnToBase' | 'idle';
 export type EnemyBehaviorState = 'toCore' | 'chase' | 'attack' | 'kite' | 'strafe';
 
 export interface AiState {
@@ -49,18 +49,24 @@ export interface AiState {
   targetId: number | null;
   strafeDir: number; // +-1, used by kiters
   facingRefreshTimer: number;
+  // Idle-wander target (allies only, 'idle' state) — reused as a re-pick
+  // timer via facingRefreshTimer above.
+  wanderX?: number;
+  wanderY?: number;
 }
 
 export interface ProjectileData {
   damage: number;
   ownerFaction: Faction;
   ownerId: number;
-  speedX: number;
+  speedX: number; // full (un-decelerated) launch velocity — direction + magnitude reference
   speedY: number;
   traveled: number;
   maxRange: number;
   piercesTrees: boolean; // true for bullets & arrows: pass over trees
   blockedByRocks: boolean;
+  stopped: boolean; // true once decelerated to a halt; now just fading out in place
+  stopTimer: number; // seconds remaining in the post-stop fade
 }
 
 export interface Entity {
@@ -94,9 +100,11 @@ export interface Entity {
   damageFlashTimer?: number; // render: brief hit flash
   hitFlashTimer?: number;
   speedStat?: number; // movement top speed, units/s
-  aggroRadius?: number; // enemy-only: diverts to attack within this range
+  aggroRadius?: number; // engagement/detection range: enemies divert to attack, allies divert to chase, within this range
   coinsMin?: number;
   coinsMax?: number;
+  alpha?: number; // render-only opacity multiplier (e.g. a projectile fading out after it stops)
+  barrelPullback?: number; // player-only: current recoil pullback of the aim-direction barrel line, in world units
 }
 
 let nextId = 1;

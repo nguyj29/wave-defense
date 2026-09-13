@@ -12,9 +12,11 @@ export const WORLD = {
 };
 
 export const OBSTACLES = {
-  treeCount: 120,
+  // Reduced from 120/40 (see DECISIONS.md) — the original density read as a
+  // dense thicket rather than scattered forest at this map size.
+  treeCount: 65,
   treeRadius: 18,
-  rockCountMin: 40, // "roughly 40" rocks
+  rockCountMin: 22, // "roughly 22" rocks — still enough cover near lanes for archer-kiting
   rockRadius: [24, 40] as [number, number],
   rockVertsRange: [6, 9] as [number, number],
 };
@@ -88,6 +90,11 @@ export interface WeaponDef {
   magazinePerLevel?: number;
   reloadTime?: number;
   infiniteAmmo?: boolean;
+  // Recoil "game feel" (see RECOIL below for the shared decay rate): world
+  // units of camera kick and of visual barrel pullback per shot, scaled by
+  // weapon so the rifle kicks noticeably more than the pistol.
+  recoilCamera: number;
+  recoilBarrel: number;
 }
 
 export const WEAPONS: Record<'rifle' | 'pistol', WeaponDef> = {
@@ -98,12 +105,17 @@ export const WEAPONS: Record<'rifle' | 'pistol', WeaponDef> = {
     damagePerLevel: 2,
     fireRateBase: 10,
     fireRatePerLevel: 0,
-    range: 600,
+    // Raised from 600 so the rifle comfortably outranges one full 1x-zoom
+    // screen width (CAMERA.baseViewWidth = 1600) as the long-range option —
+    // see DECISIONS.md.
+    range: 1800,
     spreadDeg: 3,
     bulletSpeed: 900,
     magazineBase: 30,
     magazinePerLevel: 10,
     reloadTime: 1.5,
+    recoilCamera: 14,
+    recoilBarrel: 10,
   },
   pistol: {
     key: '2',
@@ -112,11 +124,22 @@ export const WEAPONS: Record<'rifle' | 'pistol', WeaponDef> = {
     damagePerLevel: 4,
     fireRateBase: 3,
     fireRatePerLevel: 0.5,
+    // Kept short relative to the rifle so it stays the clear close-range/
+    // backup weapon (see DECISIONS.md).
     range: 500,
     spreadDeg: 0,
     bulletSpeed: 900,
     infiniteAmmo: true,
+    recoilCamera: 6,
+    recoilBarrel: 5,
   },
+};
+
+// Shared recoil decay: after a shot kicks the camera/barrel to full strength,
+// it eases back to neutral at this rate (exponential decay, so the same
+// every time — deterministic "game feel" polish, not screen-wide jitter).
+export const RECOIL = {
+  decayPerSecond: 16,
 };
 
 export const SUMMON = {
@@ -143,7 +166,20 @@ export const ALLY = {
   meleeDamage: 10,
   meleeRate: 1, // hits/s
   regenRate: 1, // always-on
-  seekRadius: 700,
+  // Engagement/detection range — named to match ENEMIES[x].aggroRadius so
+  // the concept is consistent across factions (see entities/types.ts,
+  // Entity.aggroRadius, which both factions now populate).
+  aggroRadius: 700,
+  // "Home" leash: when no enemy is within aggroRadius, an ally within this
+  // distance of the base (CORE) idles there instead of chasing; beyond it,
+  // the ally walks back toward the base instead of continuing whatever it
+  // was doing. Replaces the old unbounded map-wide chase fallback — see
+  // DECISIONS.md and entities/behaviors/ally.ts.
+  leashRadius: 500,
+  // Radius of the light idle wander around the ally's position once it's
+  // home with nothing to fight, so idling allies don't look like frozen
+  // statues.
+  idleWanderRadius: 60,
   color: '#3fa9f5',
 };
 
@@ -247,16 +283,34 @@ export const WAVES: WaveDef[] = [
 ];
 
 export const SPAWN_DIRECTOR = {
-  baseRate: 0.15, // spawns/s
-  maxRate: 0.7, // spawns/s
+  // Roughly 2.3x'd both base and max (see DECISIONS.md) — "much higher"
+  // spawn density was the explicit ask, and the spatial-grid collision
+  // system has headroom well past this at the ~300-entity budget.
+  baseRate: 0.35, // spawns/s
+  maxRate: 1.8, // spawns/s
   killRateAtMax: 1.2, // kills/s that saturates the rate
   killWindowSec: 10, // rolling window for smoothed kill rate
   rampUpSec: 3,
   rampDownSec: 8,
-  aliveCap: 45,
+  aliveCap: 90,
   hysteresis: 0.05, // deadband on normalized kill rate before rate is allowed to move further
   bossBudgetFraction: 0.6, // spawn boss after 60% of budget spawned...
   bossLatestSec: 120, // ...or at 2:00 mark, whichever first
+};
+
+// ---------------------------------------------------------------------------
+// Projectile flight physics — shared by every projectile (bullets & arrows),
+// so a shot loses momentum smoothly at max range instead of popping out of
+// existence. See combat/projectiles.ts.
+// ---------------------------------------------------------------------------
+export const PROJECTILE_PHYSICS = {
+  // Deceleration begins this fraction of the way through maxRange (i.e. over
+  // the final 20% of the shot's travel) and eases the speed down to 0 by the
+  // time traveled reaches maxRange.
+  decelFractionOfRange: 0.2,
+  // Once "stopped", the projectile sits in place and fades out over this
+  // many seconds before being removed.
+  stopFadeDuration: 0.35,
 };
 
 export const EARLY_CALL = {

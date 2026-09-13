@@ -1,5 +1,5 @@
 import { Camera } from './camera.ts';
-import { ALLY, COINS, CORE, DEBUG, PLAYER, SHOP, SUMMON, WORLD } from './config.ts';
+import { ALLY, COINS, CORE, DEBUG, PLAYER, SHOP, SPAWN_DIRECTOR, SUMMON, WORLD } from './config.ts';
 import { setGodMode, updateRegen } from './combat/damage.ts';
 import {
   createPlayerWeaponState,
@@ -506,10 +506,18 @@ export class Game {
 
     this.camera.update(this.phase === 'shop' ? 0 : FIXED_DT, this.player.x, this.player.y);
 
+    // Player barrel visual recoil: pull the aim-direction line back toward
+    // the player on fire, easing back out as playerWeaponState.recoil decays
+    // (same deterministic curve driving the camera kick below).
+    this.player.barrelPullback = this.playerWeaponState.recoil * this.playerWeaponState.recoilBarrelStrength;
+
     ctx.save();
-    if (this.playerWeaponState.screenShake > 0) {
-      const s = this.playerWeaponState.screenShake * 4;
-      ctx.translate((Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
+    if (this.playerWeaponState.recoil > 0) {
+      // Deterministic camera kick opposite the aim direction — snaps out on
+      // fire, eases back to center. Replaces the old random full-screen
+      // jitter (screenShake) entirely.
+      const kick = this.playerWeaponState.recoil * this.playerWeaponState.recoilCameraStrength * this.camera.pixelScale;
+      ctx.translate(-Math.cos(this.playerWeaponState.recoilAngle) * kick, -Math.sin(this.playerWeaponState.recoilAngle) * kick);
     }
 
     drawWorldBackground(ctx, this.camera);
@@ -606,7 +614,7 @@ export class Game {
         budgetSpent: snap.budgetSpent,
         budgetTotal: snap.budgetTotal,
         aliveCount: this.entities.filter((e) => e.kind === 'enemy' && !e.dead).length,
-        aliveCap: 45,
+        aliveCap: SPAWN_DIRECTOR.aliveCap,
         waveTimeRemaining: this.waveManager.phase === 'running' ? this.waveManager.timeRemaining : 0,
         history: this.rateHistory,
       };

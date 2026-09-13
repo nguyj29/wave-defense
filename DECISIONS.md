@@ -244,6 +244,153 @@ Simulated against the spec's ~70%-budget expected drop schedule
   visually; worth a dedicated pass watching for bunching right at a gap
   mouth once real playtesting is possible.
 
+## Playtest feedback pass (post-MVP)
+
+Seven changes requested after a play session. Numbers below are all in
+`src/config.ts` unless noted; behavior changes are in the files named.
+
+1. **Removed the random screen-shake jitter on gunfire; replaced it with
+   deterministic recoil.** `combat/playerWeapons.ts`'s `screenShake` field
+   (which drove `ctx.translate((Math.random()-0.5)*s, ...)` in `game.ts`,
+   redrawing the *entire* view at a random offset every frame while it was
+   nonzero) is gone entirely. In its place: `PlayerWeaponState.recoil` snaps
+   to `1` on every shot and eases back to `0` via exponential decay
+   (`RECOIL.decayPerSecond = 16`, same curve every time — no `Math.random()`
+   anywhere in the effect). Two things read that `0..1` value, both scaled
+   by new per-weapon `WeaponDef.recoilCamera`/`recoilBarrel` fields (rifle
+   14/10, pistol 6/5 world units — rifle kicks noticeably more): a camera
+   kick opposite the aim angle at the moment of firing (`game.ts` render(),
+   translated in screen pixels via `camera.pixelScale`), and a barrel-line
+   pullback (`Entity.barrelPullback`, consumed in `render/renderer.ts`'s
+   player-only aim-line draw) that visually recoils the line back toward the
+   player and eases back out. Both are driven by the same `recoil` scalar so
+   they stay in lockstep. Applies to both weapons (previously screenShake
+   was rifle-only); the pistol's smaller numbers keep it feeling snappier/
+   lighter as the backup weapon.
+2. **Ally engagement/leash behavior**, `entities/behaviors/ally.ts`: allies
+   no longer call `findNearestUnbounded` and beeline across the whole
+   3200x3200 map when nothing is within range (a suicide-run risk). The
+   engagement range is now `Entity.aggroRadius` (defaulting to the new
+   `ALLY.aggroRadius = 700`, renamed from `seekRadius` and now actually set
+   on ally entities in `factory.ts`, exactly mirroring how `ENEMIES[x]
+   .aggroRadius` already worked) — this was also the "give allies an
+   equivalently-named field" ask. When nothing is in range: if the ally is
+   farther than `ALLY.leashRadius` (500 units) from `CORE`, it enters a new
+   `'returnToBase'` state and walks home; otherwise it enters a new `'idle'`
+   state and does a light wander within `ALLY.idleWanderRadius` (60 units)
+   of its current spot (re-picking a nearby wander point every 2-4s) rather
+   than standing as a frozen statue or running off-map. `AllyBehaviorState`
+   in `entities/types.ts` was updated to `'advance' | 'attack' |
+   'returnToBase' | 'idle'` (dropped the old `'seekEnemy'`, which is no
+   longer a real state now that unbounded seeking is gone).
+3. **Rifle range 600 -> 1800.** `CAMERA.baseViewWidth` is 1600 (the 1x-zoom
+   screen width), so 600 meant the rifle couldn't even reach across one
+   screen; 1800 comfortably exceeds a full screen width at 1x zoom, making
+   it the clear long-range option. Pistol range left at 500 (already a
+   3.6x gap below the new rifle range, more than enough separation without
+   needing to nerf the pistol further — it's meant to stay the short-range
+   backup).
+4. **Projectiles decelerate to a stop instead of popping out of existence**,
+   `combat/projectiles.ts` + new `PROJECTILE_PHYSICS` config: over the final
+   `decelFractionOfRange` (20%) of a projectile's `maxRange`, its speed eases
+   from full to zero via a smoothstep curve (`t*t*(3-2*t)`, applied to
+   distance-traveled fraction, not elapsed time, so it's consistent
+   regardless of bullet speed). Rock-blocking and hit detection still run
+   every frame during this decel window — a slowing bullet can still land a
+   hit or get blocked right up until it stops — using the same code path as
+   before. Once stopped (either `traveled >= maxRange` or speed drops below
+   2% of launch speed, whichever first), the projectile sits in place and
+   fades via a new `Entity.alpha` field (`stopFadeDuration = 0.35s`) before
+   being removed. `Entity.alpha` is a generic render-only opacity multiplier
+   (read in `render/renderer.ts`'s `drawEntity` via `ctx.globalAlpha`), not
+   projectile-specific, so it's reusable for any future fade effect.
+5. **Obstacle density**: `treeCount` 120 -> 65, `rockCountMin` 40 -> 22 on
+   the same 3200x3200 map — roughly halved, which reads as scattered forest
+   rather than dense thicket. Rock count was cut proportionally less than
+   trees (45% vs 46%... effectively the same ratio) specifically so there's
+   still meaningful cover near approach lanes for the archer-kiting-behind-
+   rocks mechanic (`ENEMIES.archer`: kites at 350, fires up to 450, rocks
+   block arrows) — the placement algorithm in `world/obstacles.ts` is
+   unchanged (same seeded rejection-sampling against `BASE_CLEAR_RECT` /
+   `CORNER_CLEAR_RADIUS` / world bounds), just asked for fewer of each type,
+   so spawn corners, the base interior, and lane traversability are
+   respected identically to before, just less densely packed.
+6. **Spawn rate roughly 2.3x'd**: `baseRate` 0.15 -> 0.35 spawns/s, `maxRate`
+   0.7 -> 1.8 spawns/s, `aliveCap` 45 -> 90. "Much higher" was the explicit
+   ask, so both rates were raised well beyond a timid bump; `aliveCap` was
+   doubled to actually let the higher max rate matter (the old 45 cap would
+   have throttled a 1.8/s rate almost immediately once a wave got going).
+   `killRateAtMax` (1.2 kills/s) and the ramp timings (`rampUpSec`/
+   `rampDownSec`) were left alone per the brief — nothing about the higher
+   base/max rates makes those look obviously wrong on inspection; they still
+   read as a reasonable "sustained kill pace that saturates the director"
+   and "3s to ramp up, 8s to decay" shape, just against a higher ceiling.
+   Since per-wave spawn budgets (`WAVES`) are unchanged fixed counts, the
+   practical effect is exactly as expected: waves burn through their budget
+   faster and the field gets denser mid-wave, which is the intended
+   feedback loop. Also fixed a stale hardcoded `aliveCap: 45` literal in
+   `game.ts`'s spawn-readout debug HUD (F7) to read `SPAWN_DIRECTOR.aliveCap`
+   instead, so the debug readout doesn't silently drift from the real value
+   again.
+7. **Flow field smoothing**, `world/flowfield.ts` — the `Pathfinder`
+   interface (`getDirection`/`recompute`) is untouched, so no caller
+   changes. Two changes inside `FlowField`:
+   - **Direction-field construction** no longer snaps each cell to its
+     single lowest-distance 8-connected neighbor (which limited every cell
+     to one of 8 possible headings). It now estimates a discrete gradient
+     of the Dijkstra distance field via central differences
+     (`-(dist[x+1]-dist[x-1])/2`, same for y) and normalizes that as the
+     cell's direction. This alone lets headings vary continuously with the
+     local shape of the distance field instead of being quantized to 8
+     angles. A best-neighbor fallback (the old algorithm) is kept for the
+     rare degenerate/flat-gradient case (e.g. exactly at the core, or a
+     locally symmetric pocket) so no reachable cell ever gets a zero
+     vector.
+   - **`getDirection(x,y)`** now bilinearly interpolates the direction
+     vectors of the surrounding 2x2 cell-center neighborhood based on
+     fractional position, then re-normalizes, instead of returning the raw
+     direction of whichever single cell contains the query point. Any
+     blocked/unreachable corner sample falls back to a straight-line vector
+     toward `CORE` (the same fallback the original single-cell lookup used)
+     so a bad corner near an obstacle or the field's edge can't corrupt the
+     blend. Together these remove the blocky 8-direction "staircase" look,
+     especially near diagonals, without changing the underlying Dijkstra
+     core or the `Pathfinder` contract.
+   - Checked `entities/movement.ts`'s local avoidance (soft same-faction
+     separation + hard obstacle/wall resolution): it's a positional
+     correction applied after behaviors set a desired velocity, not a
+     velocity-space force, so it can't fight the smoother flow-field
+     heading the way a competing steering force could — left untouched.
+   - Verified via Playwright smoke run (headless Chromium against the dev
+     server): spawned grunts at a far corner via the F6 debug key, let the
+     sim run ~30s, and watched the entity count / positions across
+     screenshots — enemies funneled through the horizontal wall's gap and
+     reached the player/base rather than bunching against the wrong side of
+     a wall face (visually confirmed one wave of grunts crossing the gap
+     and engaging the player). A dedicated visual "watch a full 45+ enemy
+     wave stream through both gaps" pass is still worth doing in a real
+     playtest — the automated check above used a small manually-triggered
+     cluster, not a full wave.
+
+### Verification for this pass
+
+- `npm run build` (tsc + vite build) passes clean.
+- Playwright smoke run against `npm run dev` (headless Chromium, no browser
+  available for a human here): game boots to `'playing'` phase with no
+  console/page errors; rifle fires and ammo decrements while held (recoil
+  code path exercised, no exceptions); F6-spawned grunts pathed through the
+  wall gap and reached/attacked the player over an extended run (ended in a
+  real game-over from an idle, undefended player — confirms enemy contact
+  damage and pathing both still work end-to-end); an ally engaged an enemy
+  near the player during that run (ally combat state still triggers). Did
+  **not** verify: subjective "does the recoil feel right" and "does the
+  spawn rate feel like enough" (both are feel calls that need a human
+  playing), a full 45-enemy wave watched end-to-end for gap bunching, or the
+  archer-kiting-behind-rocks mechanic specifically at the new, lower rock
+  count (the placement algorithm and rock count are still comfortably above
+  zero near lanes, but only a human playtest will show whether kiting cover
+  still feels sufficient).
+
 ## Acceptance-criteria verification note
 
 See the final chat report for which of the spec's 16 acceptance criteria

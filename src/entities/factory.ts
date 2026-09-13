@@ -50,10 +50,11 @@ export function createAlly(x: number, y: number, spec: AllySpec): Entity {
   e.health = { hp: spec.hp, maxHp: spec.hp };
   e.regen = { rate: spec.regenRate, alwaysOn: true, delay: 0, timeSinceDamage: 0 };
   e.melee = { damage: spec.meleeDamage, rate: spec.meleeRate, cooldown: 0, range: 0 };
-  e.ai = { state: 'seekEnemy', targetId: null, strafeDir: 1, facingRefreshTimer: 0 };
+  e.ai = { state: 'idle', targetId: null, strafeDir: 1, facingRefreshTimer: 0 };
   e.summonedByPlayer = spec.summonedByPlayer;
   e.spawnerId = spec.spawnerId;
   e.speedStat = spec.speed;
+  e.aggroRadius = ALLY.aggroRadius;
   return e;
 }
 
@@ -118,6 +119,8 @@ export function createProjectile(
     maxRange,
     piercesTrees: opts.piercesTrees ?? true,
     blockedByRocks: opts.blockedByRocks ?? true,
+    stopped: false,
+    stopTimer: 0,
   };
   return e;
 }

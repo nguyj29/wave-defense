@@ -131,8 +131,9 @@ export function drawEntity(ctx: CanvasRenderingContext2D, camera: Camera, e: Ent
   const r = e.radius * camera.pixelScale;
   if (p.x < -80 || p.y < -80 || p.x > camera.screenWidth + 80 || p.y > camera.screenHeight + 80) return;
 
-  ctx.fillStyle = shapeColorWithFlash(e);
   ctx.save();
+  ctx.globalAlpha = e.alpha ?? 1;
+  ctx.fillStyle = shapeColorWithFlash(e);
   ctx.translate(p.x, p.y);
   ctx.rotate(e.angle);
 
@@ -168,11 +169,15 @@ export function drawEntity(ctx: CanvasRenderingContext2D, camera: Camera, e: Ent
   }
 
   if (e.kind === 'player') {
+    // Recoil pulls the barrel line back toward the player on fire and eases
+    // back out (see combat/playerWeapons.ts / game.ts render()).
+    const pullback = (e.barrelPullback ?? 0) * camera.pixelScale;
+    const barrelLen = Math.max(0, r + 14 * camera.pixelScale - pullback);
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = Math.max(2, 3 * camera.pixelScale);
     ctx.beginPath();
     ctx.moveTo(0, 0);
-    ctx.lineTo(r + 14 * camera.pixelScale, 0);
+    ctx.lineTo(barrelLen, 0);
     ctx.stroke();
   }
 
