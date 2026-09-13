@@ -56,6 +56,10 @@ export const CORE = {
   maxHp: 1000,
   hpPerLevel: 150,
   color: '#3b6fe0', // strong medium blue — reads clearly against forest green
+  // Round 9: the core can be knocked to 0 HP twice and refill (with a brief
+  // banner) before the 3rd loss is a real game over — see DECISIONS.md and
+  // game.ts's coreLives handling.
+  lives: 3,
 };
 
 export const BASE = {
@@ -121,6 +125,9 @@ export const PLAYER = {
   accelTime: 0.1, // seconds to reach top speed
   iframeDuration: 0.3,
   barrelLength: 22,
+  // Round 9: player death no longer ends the run — see DECISIONS.md and
+  // game.ts's playerRespawnTimer handling.
+  respawnDelaySec: 10,
 };
 
 export const CAMERA = {

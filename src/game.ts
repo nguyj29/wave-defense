@@ -169,6 +169,21 @@ export class Game {
   // only draws it while > 0.
   endlessBannerTimer = 0;
 
+  // Round 9 (item #1): player death starts a respawn countdown instead of
+  // ending the run. `playerRespawnActive` is set the instant player.dead
+  // flips true (so the countdown starts exactly once per death, not re-armed
+  // every tick), and `playerRespawnTimer` counts down from
+  // PLAYER.respawnDelaySec to 0, at which point respawnPlayer() fires.
+  playerRespawnActive = false;
+  playerRespawnTimer = 0;
+
+  // Round 9 (item #2): the core survives up to CORE.lives total losses
+  // before a real game over. `coreDownBannerTimer` drives a brief "Core
+  // Down!" banner (same pattern as endlessBannerTimer/drawEndlessBanner)
+  // whenever a non-final loss refills and continues the run.
+  coreLives = CORE.lives;
+  coreDownBannerTimer = 0;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     const ctx = canvas.getContext('2d');
@@ -235,9 +250,55 @@ export class Game {
     this.camera.zoom = 1.0;
     this.gameOverInfo = null;
     this.endlessBannerTimer = 0;
+    this.playerRespawnActive = false;
+    this.playerRespawnTimer = 0;
+    this.coreLives = CORE.lives;
+    this.coreDownBannerTimer = 0;
     this.debug.godMode = false;
     setGodMode(false);
     this.phase = 'playing';
+  }
+
+  /**
+   * A safe landing spot inside the base pen, not exactly on the core — the
+   * same offset the initial spawn in reset() already used. Shared by
+   * player respawn (#1) and the warp-to-core hotkey (#2) so both land in the
+   * identical, already-battle-tested spot rather than duplicating a magic
+   * offset. See DECISIONS.md.
+   */
+  private safeBaseSpot(): { x: number; y: number } {
+    return { x: CORE.x + 60, y: CORE.y - 60 };
+  }
+
+  /** Ends the respawn countdown: restores the player at a safe base spot with full HP. See DECISIONS.md round 9. */
+  private respawnPlayer(): void {
+    const spot = this.safeBaseSpot();
+    this.player.x = spot.x;
+    this.player.y = spot.y;
+    this.player.prevX = spot.x;
+    this.player.prevY = spot.y;
+    this.player.vx = 0;
+    this.player.vy = 0;
+    this.player.dead = false;
+    this.player.hitFlashTimer = 0;
+    this.player.health!.hp = this.player.health!.maxHp;
+    // Brief grace window so the player doesn't get instantly re-hit the tick
+    // they land, same mechanism as a normal hit's i-frames.
+    this.player.iframeTimer = PLAYER.iframeDuration;
+    if (this.player.regen) this.player.regen.timeSinceDamage = 0;
+    // The death->cull path (see the entities filter at the end of
+    // simulate()) removes the dead player from `this.entities` the tick
+    // after it dies, even though `this.player` itself is the same object
+    // and keeps being read all over (camera, HUD, render). Re-add it now
+    // that it's alive again.
+    if (!this.entities.includes(this.player)) this.entities.push(this.player);
+    this.playerRespawnActive = false;
+    this.playerRespawnTimer = 0;
+    // No dedicated "respawn" SFX exists yet (audio is on hold pending
+    // user-provided files, per the task brief) — reusing allySummon's
+    // existing trigger call as a "you're back" chime, same "reuse an
+    // existing SFX trigger" allowance the death cue below relies on.
+    playSfx('allySummon', 0.7);
   }
 
   start(): void {
@@ -320,6 +381,8 @@ export class Game {
       this.phase = 'playing';
       return;
     }
+    const wheel = this.input.consumeWheel();
+    if (wheel !== 0) this.shopPanel.handleWheel(wheel, this.camera.screenWidth, this.camera.screenHeight);
     if (this.input.wasMousePressed()) {
       this.shopPanel.handleClick(
         this.input.mouseX,
@@ -372,6 +435,23 @@ export class Game {
     if (input.wasPressed('Digit3')) this.activeSlot = 3;
     if (input.wasPressed('KeyR')) startReload(this.playerWeaponState, this.shopLevels);
     if (input.wasPressed('KeyM')) toggleMusicMute();
+    // Round 9 (item #3): free, instant, no-cooldown warp to a safe spot
+    // inside the base pen — 'G' was picked since it's unused by every other
+    // binding (WASD/arrows, 1/2/3, R, E, Space, F1-F8, F10, M) and, unlike
+    // Home, works identically on a laptop keyboard with no dedicated Home
+    // key. Deliberately gated on the player being alive: mid-respawn the
+    // player entity is removed from play (see respawnPlayer()/the death
+    // branch below), so there's nothing to teleport.
+    if (input.wasPressed('KeyG') && !this.player.dead) {
+      const spot = this.safeBaseSpot();
+      this.player.x = spot.x;
+      this.player.y = spot.y;
+      this.player.prevX = spot.x;
+      this.player.prevY = spot.y;
+      this.player.vx = 0;
+      this.player.vy = 0;
+      playSfx('allySummon', 0.5);
+    }
 
     this.player.iframeTimer = Math.max(0, (this.player.iframeTimer ?? 0) - dt);
 
@@ -490,10 +570,35 @@ export class Game {
       if (e.hitFlashTimer && e.hitFlashTimer > 0) e.hitFlashTimer -= dt;
     }
 
-    // Player / core death checks.
-    if (this.player.dead || this.core.dead) {
-      this.gameOverInfo = { waveReached: wm.waveIndex + 1, coins: this.coins };
-      this.phase = 'gameover';
+    // Player death: round 9 (item #1) — a 10s respawn countdown instead of
+    // an immediate game over. Enemies/allies/waves above already kept
+    // running this same tick (the death branch here doesn't early-return),
+    // so the window is a real risk period, not a soft pause.
+    if (this.player.dead) {
+      if (!this.playerRespawnActive) {
+        this.playerRespawnActive = true;
+        this.playerRespawnTimer = PLAYER.respawnDelaySec;
+      } else {
+        this.playerRespawnTimer -= dt;
+        if (this.playerRespawnTimer <= 0) this.respawnPlayer();
+      }
+    }
+
+    // Core death: round 9 (item #2) — the core survives CORE.lives total
+    // losses. A non-final loss refills the core to its current (shop-
+    // upgraded) max HP and shows a brief banner; only the final loss is a
+    // real game over. Game over is now ONLY reachable through this path —
+    // player death alone never ends the run (see above).
+    if (this.core.dead) {
+      this.coreLives--;
+      if (this.coreLives > 0) {
+        this.core.dead = false;
+        this.core.health!.hp = this.core.health!.maxHp;
+        this.coreDownBannerTimer = 3.5;
+      } else {
+        this.gameOverInfo = { waveReached: wm.waveIndex + 1, coins: this.coins };
+        this.phase = 'gameover';
+      }
     }
 
     // --- Wave / spawn direction -----------------------------------------
@@ -533,6 +638,8 @@ export class Game {
     // Round 8: endless-mode banner countdown (see endlessBannerTimer/
     // WaveManager.justEnteredEndless above).
     if (this.endlessBannerTimer > 0) this.endlessBannerTimer -= dt;
+    // Round 9: "Core Down!" banner countdown (see coreDownBannerTimer above).
+    if (this.coreDownBannerTimer > 0) this.coreDownBannerTimer -= dt;
 
     // Spawn-rate debug graph history.
     this.rateHistory.push(this.spawnDirector.currentRate);
@@ -661,6 +768,12 @@ export class Game {
 
     this.camera.update(this.phase === 'shop' ? 0 : FIXED_DT, this.player.x, this.player.y);
 
+    // Round 9 (item #5): which held-item silhouette to draw at the end of
+    // the barrel — see entities/types.ts's heldItem field and
+    // render/renderer.ts::drawPlayerHeldItem. Slot 3 is always the wand
+    // regardless of playerWeaponState (which only tracks rifle/pistol).
+    this.player.heldItem = this.activeSlot === 3 ? 'wand' : this.playerWeaponState.current;
+
     // Player barrel visual recoil: pull the aim-direction line back toward
     // the player on fire, easing back out as playerWeaponState.recoil decays
     // (same deterministic curve driving the camera kick below).
@@ -731,6 +844,7 @@ export class Game {
       playerMaxHp: this.player.health!.maxHp,
       coreHp: this.core.health!.hp,
       coreMaxHp: this.core.health!.maxHp,
+      coreLives: this.coreLives,
       weaponLabel: this.activeSlot === 3 ? 'Summon Wand' : this.activeSlot === 1 ? 'Assault Rifle' : 'Pistol',
       ammoText:
         this.activeSlot === 1
@@ -829,12 +943,101 @@ export class Game {
     }
 
     if (this.endlessBannerTimer > 0) this.drawEndlessBanner();
+    if (this.coreDownBannerTimer > 0) this.drawCoreDownBanner();
+    if (this.phase === 'playing' && this.playerRespawnActive) this.drawRespawnCountdown();
 
     if (this.phase === 'start') {
       drawStartScreen(ctx, w, h, this.difficulty);
     }
 
+    // Round 9 (item #6): pointer-lock mitigation UI. While locked, the OS
+    // cursor is hidden (style.css's `cursor: crosshair` has no effect once
+    // locked), so a custom in-canvas crosshair at the virtual mouse position
+    // is the primary aim feedback. While NOT locked during active play
+    // (released via Escape, alt-tab, or simply never engaged yet), show a
+    // clear "click to resume" prompt rather than leaving aim silently frozen
+    // with no visible way to recover.
+    if (this.input.pointerLocked) {
+      this.drawCrosshair(this.input.mouseX, this.input.mouseY);
+    } else if (this.phase === 'playing') {
+      this.drawPointerLockPrompt();
+    }
+
     this.lastRenderMs = performance.now() - t0;
+  }
+
+  /** Round 9 (item #6): custom reticle drawn at the virtual mouse position while pointer lock hides the OS cursor. */
+  private drawCrosshair(x: number, y: number): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 2;
+    const r = 10;
+    ctx.beginPath();
+    ctx.moveTo(x - r, y);
+    ctx.lineTo(x - 3, y);
+    ctx.moveTo(x + 3, y);
+    ctx.lineTo(x + r, y);
+    ctx.moveTo(x, y - r);
+    ctx.lineTo(x, y - 3);
+    ctx.moveTo(x, y + 3);
+    ctx.lineTo(x, y + r);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x, y, 2, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** Round 9 (item #6): shown whenever pointer lock isn't currently engaged during active play — see Input's pointerlockchange handling. */
+  private drawPointerLockPrompt(): void {
+    const ctx = this.ctx;
+    const w = this.camera.screenWidth;
+    ctx.save();
+    ctx.textAlign = 'center';
+    const pulse = 0.75 + 0.25 * Math.sin(performance.now() / 300);
+    ctx.font = 'bold 28px sans-serif';
+    ctx.fillStyle = `rgba(255,255,255,${pulse})`;
+    ctx.fillText('Click to resume aiming', w / 2, 110);
+    ctx.restore();
+  }
+
+  /** Round 9 (item #1): centered countdown shown for the full 10s respawn window. */
+  private drawRespawnCountdown(): void {
+    const ctx = this.ctx;
+    const w = this.camera.screenWidth;
+    const h = this.camera.screenHeight;
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 48px sans-serif';
+    ctx.fillStyle = '#ff6b6b';
+    ctx.fillText('YOU DIED', w / 2, h / 2 - 60);
+    ctx.font = 'bold 36px sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`Respawning in ${Math.ceil(this.playerRespawnTimer)}s`, w / 2, h / 2);
+    ctx.font = '22px sans-serif';
+    ctx.fillStyle = '#cfd8e3';
+    ctx.fillText('The base and waves are still under attack — get back in the fight fast', w / 2, h / 2 + 44);
+    ctx.restore();
+  }
+
+  /** Round 9 (item #2): brief banner shown whenever a non-final core loss refills and continues the run. */
+  private drawCoreDownBanner(): void {
+    const ctx = this.ctx;
+    const w = this.camera.screenWidth;
+    const alpha = Math.min(1, this.coreDownBannerTimer / 0.8);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 44px sans-serif';
+    ctx.fillStyle = '#ff8080';
+    ctx.fillText('CORE DOWN!', w / 2, 170);
+    ctx.font = 'bold 28px sans-serif';
+    ctx.fillStyle = '#ffe0e0';
+    const lives = this.coreLives;
+    ctx.fillText(`${lives} ${lives === 1 ? 'Life' : 'Lives'} Remaining`, w / 2, 212);
+    ctx.restore();
   }
 
   /** Round 8: transient one-time "Wave 5 Complete — Endless Mode" celebratory banner, see endlessBannerTimer. */

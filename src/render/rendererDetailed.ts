@@ -11,7 +11,7 @@ import type { Camera } from '../camera.ts';
 import type { Entity } from '../entities/types.ts';
 import { WALL_SEGMENTS } from '../world/map.ts';
 import type { Obstacle } from '../world/obstacles.ts';
-import { interpolatedPos } from './renderer.ts';
+import { drawPlayerHeldItem, interpolatedPos } from './renderer.ts';
 
 /** Lightens (positive percent) or darkens (negative) a #rrggbb color. Cheap string math, no canvas objects. */
 function shade(hex: string, percent: number): string {
@@ -232,20 +232,10 @@ export function drawEntityDetailed(ctx: CanvasRenderingContext2D, camera: Camera
   }
 
   if (e.kind === 'player') {
-    const pullback = (e.barrelPullback ?? 0) * camera.pixelScale;
-    const barrelLen = Math.max(0, r + 14 * camera.pixelScale - pullback);
-    ctx.strokeStyle = '#333333';
-    ctx.lineWidth = Math.max(3, 4.5 * camera.pixelScale);
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(barrelLen, 0);
-    ctx.stroke();
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = Math.max(1.5, 2.2 * camera.pixelScale);
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(barrelLen, 0);
-    ctx.stroke();
+    // See drawPlayerHeldItem in renderer.ts (round 9, item #5) — shared with
+    // the flat render path, `detailed: true` adds the dark underlay stroke
+    // this style previously drew inline for the plain barrel line.
+    drawPlayerHeldItem(ctx, r, camera.pixelScale, e.barrelPullback ?? 0, e.heldItem ?? 'rifle', true);
   }
 
   ctx.restore();

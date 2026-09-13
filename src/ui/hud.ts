@@ -3,6 +3,9 @@ export interface HudData {
   playerMaxHp: number;
   coreHp: number;
   coreMaxHp: number;
+  // Round 9: remaining core lives (see config.ts CORE.lives / game.ts
+  // coreLives) — shown as small pips near the core HP bar, always visible.
+  coreLives: number;
   weaponLabel: string;
   ammoText: string;
   summonCooldownRemaining: number;
@@ -160,6 +163,32 @@ export function drawHud(ctx: CanvasRenderingContext2D, screenW: number, screenH:
   drawBar(ctx, 16, screenH - 84, 320, 34, d.playerHp / d.playerMaxHp, '#5ec96a', `HP ${Math.ceil(d.playerHp)}/${d.playerMaxHp}`);
   // Core HP (bottom-left, above player)
   drawBar(ctx, 16, screenH - 132, 320, 34, d.coreHp / d.coreMaxHp, '#4ea3d1', `Core ${Math.ceil(d.coreHp)}/${Math.round(d.coreMaxHp)}`);
+  // Core lives pips (round 9): small filled hexagons just right of the Core
+  // bar's label text, one per remaining life — always visible, not just when
+  // damaged, so the player can plan around how many losses are left.
+  {
+    const pipR = 7;
+    const pipGap = 6;
+    const pipY = screenH - 132 - 12;
+    let pipX = 16 + pipR;
+    for (let i = 0; i < d.coreLives; i++) {
+      ctx.fillStyle = '#4ea3d1';
+      ctx.beginPath();
+      for (let s = 0; s < 6; s++) {
+        const a = (s / 6) * Math.PI * 2;
+        const vx = pipX + Math.cos(a) * pipR;
+        const vy = pipY + Math.sin(a) * pipR;
+        if (s === 0) ctx.moveTo(vx, vy);
+        else ctx.lineTo(vx, vy);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      pipX += pipR * 2 + pipGap;
+    }
+  }
 
   if (d.godMode) {
     ctx.fillStyle = '#ffd700';

@@ -107,6 +107,13 @@ export interface Entity {
   coinsMax?: number;
   alpha?: number; // render-only opacity multiplier (e.g. a projectile fading out after it stops)
   barrelPullback?: number; // player-only: current recoil pullback of the aim-direction barrel line, in world units
+  // Round 9: player-only, set fresh every render frame from Game.activeSlot/
+  // playerWeaponState.current — which held-item silhouette (renderer.ts's
+  // drawPlayerHeldItem) to draw at the end of the barrel/in-hand. Follows the
+  // same "transient per-frame render field on Entity" pattern as
+  // barrelPullback above rather than threading an extra param through both
+  // render paths' generic drawEntity(Detailed) signatures.
+  heldItem?: 'rifle' | 'pistol' | 'wand';
   // Shared steering-noise state (see entities/movement.ts::applySteeringNoise):
   // a persistent, slowly-drifting angle offset applied to "move directly
   // toward a distant target/core" vectors so converging units fan out a

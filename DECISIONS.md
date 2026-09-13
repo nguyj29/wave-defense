@@ -1907,3 +1907,349 @@ directly — no render-path bypass to fix.
   pacing feeling right at very deep endless waves (30+) rather than either
   dragging on too long (too many enemies for the alive cap to admit
   quickly) or feeling sparse (cap reached too fast, then idle).
+
+## Round 9: player respawn, core lives, warp hotkey, shop panel fit, weapon visuals, pointer-lock mitigation
+
+Six independent items this round. Taking them in the order given in the brief.
+
+### 1. Player respawn (10s timer) instead of immediate game over
+
+`PLAYER.respawnDelaySec = 10` (config.ts). `Game` gained two fields:
+`playerRespawnActive` (set the instant `player.dead` flips true, so the
+timer is armed exactly once per death rather than re-armed every tick) and
+`playerRespawnTimer` (counts down from `respawnDelaySec`). The check lives
+in `simulate()`, in the same place the old "player.dead || core.dead ->
+gameover" block used to be — it no longer early-returns or pauses anything,
+so enemies/allies/the wave clock all keep ticking normally underneath a
+dead player for the full 10s, which is the explicit "real risk period" ask.
+
+One existing mechanic needed accounting for: the end of `simulate()` culls
+every dead non-core entity out of `this.entities` every tick
+(`this.entities = this.entities.filter(e => !e.dead || e.kind === 'core')`).
+That means the dead player is removed from the live entity list the tick
+after it dies — correct per the brief ("player entity stays removed/dead")
+— but `this.player` itself is a long-lived reference read all over the
+place (camera follow, HUD, render, the new warp hotkey's guard), so nothing
+else needed to change; `respawnPlayer()` just has to remember to push it
+back into `this.entities` (`if (!this.entities.includes(this.player))
+this.entities.push(this.player)`) alongside resetting `dead`/`hp`/position.
+
+Landing spot: reused the exact offset `reset()` already spawns the player
+at (`CORE.x + 60, CORE.y - 60`), factored into a shared `safeBaseSpot()`
+private method so respawn (#1) and the warp hotkey (#3) can't drift apart
+into two different "safe spot" definitions. It's already known-good (inside
+the wall pen, clear of the core's collision radius) since it's the same
+spot every run has started from since the base-pen wall system existed.
+
+Respawn also grants one `PLAYER.iframeDuration` worth of i-frames (the same
+duration a normal hit grants) so the player doesn't get instantly re-hit
+the tick they land — not explicitly requested, but "place the player back
+in a real fight zone with 0 downside protection" felt like an oversight
+rather than an intended difficulty knob, and the amount is trivial (0.3s,
+an existing constant, not a new tunable).
+
+Death/respawn SFX: no new sounds were added (audio composition is on hold
+per the task brief). The existing `playerHurt` SFX already fires on the
+fatal hit via `applyDamage`'s unconditional `playDamageSfx` call, so death
+already has an audible cue for free. For the respawn "you're back" cue, I
+reused the existing `allySummon` trigger (same one the new warp hotkey
+also reuses) — it's a "something appeared" chime, close enough in feel,
+and reusing an existing SFX trigger call is exactly what the brief allows
+without touching `audio/`.
+
+Countdown UI: `drawRespawnCountdown()` (game.ts, same
+banner-drawing-method pattern as `drawEndlessBanner`) shows a centered
+"YOU DIED" / "Respawning in Ns" / explanatory subline while
+`playerRespawnActive` is true and `phase === 'playing'`.
+
+### 2. Core has 3 lives
+
+`CORE.lives = 3` (config.ts). `Game.coreLives` initialized from it and
+reset to it in `reset()`. The old unconditional `core.dead -> gameover`
+check is replaced with: decrement `coreLives`; if any remain, immediately
+flip `core.dead` back to `false` and refill `core.health.hp` to
+`core.health.maxHp` (which is *already* the shop-upgraded max — `buyItem`
+mutates `maxHp` in place on purchase, so reading it live here automatically
+picks up every prior Core HP shop level, no separate tracking needed) and
+arm a 3.5s `coreDownBannerTimer`; only on the *last* life does the real
+`gameOverInfo`/`phase = 'gameover'` path still fire, unchanged.
+
+The refill-in-place has to happen the same simulate() tick the core dies,
+before that tick's entity cull — the cull keeps `kind === 'core'`
+entities regardless of `dead` (it always has, so a dead-but-uncollected
+core doesn't vanish from `this.entities`), but the render loop's `if
+(e.dead) continue` would otherwise skip drawing it for a frame. Since dead
+is flipped back to false in the same tick core.dead was set, there's no
+visible gap.
+
+Banner text: "CORE DOWN!" / "N Lives Remaining" (singular "Life" at
+`lives === 1`), styled after the existing `drawEndlessBanner`'s two-line
+big-title/smaller-subtitle look and fade-out (`min(1, timer/0.8)`) so it
+reads as "the same kind of transient event notification" as the endless-
+mode banner rather than a new visual language.
+
+HUD: small filled hexagon pips (matching CORE's own `#4ea3d1` blue-ish
+accent — actually `#4ea3d1` is the bar fill color used for Core HP, kept
+consistent) drawn just above the Core HP bar, one per remaining life,
+always visible (not just when damaged) per the brief. Placed above rather
+than beside the bar's text label specifically to avoid overlapping the
+"Core 1000/1000"-style label text, which varies in width as Core HP scales
+with shop levels.
+
+### 3. Warp to core, any time
+
+Bound to `G` (config: `KeyG`). Checked against every existing binding
+listed in the brief (WASD/arrows, 1/2/3, R, E, Space, F1-F8, F10, M) — free.
+`Home` was the other candidate named in the brief; `G` was picked over it
+only because it sits on the home row next to WASD (no reach), not for any
+deeper reason. Implemented inline in `simulate()`'s per-tick input handling
+(not a separate method) since it's a two-line teleport + SFX, guarded on
+`!this.player.dead` (mid-respawn there's no live player entity to move) and
+implicitly gated to "active play" by living inside `simulate()`, which only
+runs during `phase === 'playing'`. No cooldown, as specified. Reuses
+`safeBaseSpot()` from #1 so warp and respawn always land in the identical
+spot.
+
+Per the brief's explicit instruction: **Escape was left alone** — it's
+already bound to closing the shop (`handleShopInput`'s
+`wasPressed('Escape')`) and nothing new was added to it, since item #6
+below relies on Escape's browser-native pointer-lock-release behavior.
+
+### 4. Shop panel not fitting on screen
+
+The round-7 panel was a fixed `860x760`. At a 1280x720 viewport that's
+already broken before any margin is considered — `PANEL_H` (760) alone
+exceeds the entire viewport height (720), so `y = screenH/2 - PANEL_H/2`
+computes negative and the panel's top is pushed off-screen. At 1024x768 it
+technically fit but with only 4px of margin above and below — one extra
+row or a slightly taller font away from clipping again.
+
+Rewrote `ShopPanel.layout()` to size itself dynamically instead of using
+fixed constants:
+- Width still capped at a constant (`PANEL_W = 720`, trimmed from 860) but
+  now clamped to `screenW - 2*PANEL_SIDE_MARGIN` so it can't overflow a
+  narrow viewport either.
+- Height is *computed* from the active tab's real row count
+  (`rowCount * ROW_H` plus header/tabs/footer chrome), then clamped to
+  `screenH - 2*PANEL_SIDE_MARGIN`. This is the actual fix: the panel now
+  always requests only as much vertical space as it needs and never more
+  than the viewport minus a margin, so it can never be taller than the
+  screen.
+- Row height/tab height/padding/fonts were all shrunk (`ROW_H` 62->42,
+  `TAB_H` 56->40, row/sub/label fonts roughly 26/22->17/14, panel title
+  40->26) — a genuine compaction, not just relying on the dynamic-height
+  clamp to paper over an oversized layout. With 8 rows (the fullest tab,
+  Weapons) this produces a ~502px-tall panel, which fits comfortably at
+  both specified viewports (1280x720, 1024x768) with plenty of margin to
+  spare, confirmed by the Playwright check below.
+- **Scroll support** was added as a genuine fallback, not just theater: the
+  row list is drawn inside a `ctx.clip()`'d rectangle
+  (`[x, listTop, w, listH]`), a per-tab `scrollOffset` record tracks
+  vertical scroll position, `handleWheel()` (wired up from
+  `Game.handleShopInput()`, which now consumes the wheel delta while the
+  shop is open instead of leaving it unconsumed) clamps scroll to
+  `[0, contentHeight - listHeight]`, and hit-testing subtracts the scroll
+  offset before mapping a click to a row index. A minimal scrollbar track/
+  thumb is drawn along the list's right edge whenever `scrollable` is true.
+  For today's actual row counts (8 max) this path never actually engages
+  at any tested viewport — it exists so a future tab addition degrades to
+  "scroll for more" instead of silently clipping rows off-screen again,
+  which is what actually happened this round.
+
+Verified (see the Playwright section below) at 1280x720, 1024x768 *and*
+1600x900 for both tabs (Weapons: 8 rows, Base: 5 rows) that the computed
+panel rect fits entirely within the viewport with margin to spare, and via
+screenshot that no row or its buy-price text is clipped and both tabs are
+clickable.
+
+### 5. Player visual changes based on equipped weapon
+
+Added a shared `drawPlayerHeldItem()` in `render/renderer.ts` (imported by
+`rendererDetailed.ts`, which previously duplicated its own barrel-drawing
+block inline — now both paths call the one function with a `detailed`
+flag that adds rendererDetailed's dark underlay stroke). It draws in the
+player's already-rotated local frame (origin at center, +x = aim
+direction) — the exact frame the old plain barrel line drew in — so the
+existing recoil pullback (`e.barrelPullback`, driven by
+`playerWeaponState.recoil * recoilBarrelStrength` in `game.ts`'s
+`render()`) subtracts from each weapon's own base barrel length unchanged;
+no recoil-specific code needed to change.
+
+Which shape to draw is read from a new `Entity.heldItem?: 'rifle' |
+'pistol' | 'wand'` field, set once per render frame in `game.ts` right
+next to where `barrelPullback` is already set
+(`this.player.heldItem = this.activeSlot === 3 ? 'wand' :
+this.playerWeaponState.current`) — this follows the exact same "transient
+per-frame render-only field on Entity" pattern `barrelPullback` already
+established, rather than threading an extra parameter through both
+`drawEntity`/`drawEntityDetailed`'s generic (works-for-every-entity-kind)
+signatures.
+
+Shapes (world units before `pixelScale`, so they scale with zoom like
+everything else):
+- **Rifle**: long/thick — barrel extends to `r + 32` (vs. the old flat
+  `r + 14`), 5-unit-wide stroke, plus a dark rectangular "stock" block
+  drawn *behind* the player center (negative x) to read as a shoulder-gun
+  silhouette.
+- **Pistol**: short/stubby — barrel only extends to `r + 5`, thinner
+  (3-unit) stroke, plus a small square "grip" block near the hand instead
+  of a long stock. The rifle/pistol lengths were deliberately pushed to a
+  large gap (32 vs. 5, not e.g. 24 vs. 12) after an initial pass looked too
+  similar at default zoom in a screenshot check — see the verification
+  section.
+- **Wand**: a thin rod (`r + 18`, 2.2-unit stroke, no stock/grip block at
+  all so it can't be mistaken for a compact gun) ending in a small glowing
+  tip — three concentric circles (translucent outer glow, solid mid,
+  bright core) in a purple palette (`#9b7fe0` rod / `#c39bd3` tip /
+  `#e8d8ff` core) matching the existing Summon Wand HUD accent color
+  (`SLOTS[2].color = '#c39bd3'` in hud.ts) so the wand's in-hand color and
+  its HUD icon color agree. No per-frame gradient objects are used (three
+  flat circles instead) to match `rendererDetailed.ts`'s own stated
+  performance rationale for avoiding gradients.
+
+`heldItem` defaults to `'rifle'` (`e.heldItem ?? 'rifle'`) if ever unset,
+matching the old code's implicit "always draw *a* barrel line" behavior
+for the player and keeping every non-player entity kind (which never sets
+this field) unaffected.
+
+### 6. Pointer Lock mitigation for the reported Wayland/Brave cursor-freeze bug
+
+**This is explicitly an unverified mitigation attempt, not a confirmed
+fix — see the caveat at the end of this section before reading the rest.**
+
+Implemented in `input.ts`: `Input` gained a public `pointerLocked: boolean`
+flag. On `mousedown` (the same handler that already gates the Web Audio
+unlock on the first gesture — this hooks the identical moment), it calls
+`target.requestPointerLock()` unless a lock is already held
+(`document.pointerLockElement !== target`), so both the very first click
+on the start screen and every subsequent click while unlocked attempt to
+(re-)engage it. A `document.pointerlockchange` listener keeps
+`pointerLocked` in sync with `document.pointerLockElement === target` in
+both directions (engage and the browser's own release).
+
+While locked, `mousemove` switches from the old absolute
+`e.clientX - rect.left` calculation to accumulating `e.movementX`/
+`movementY` relative deltas into `mouseX`/`mouseY`, clamped every event to
+`[0, rect.width]`/`[0, rect.height]` (via a small local `clamp()` helper)
+so the virtual position can't run away to infinity or negative — exactly
+as specified. `screenToWorld()` and all downstream aim-angle math in
+`game.ts` (`this.camera.screenToWorld(input.mouseX, input.mouseY)`) were
+**not touched** — they already only consume `mouseX`/`mouseY`, so the
+switch from absolute to virtual-accumulated is fully transparent to them.
+
+Escape was deliberately **not** touched anywhere (see item #3 above) — the
+browser's own native "Escape releases pointer lock" behavior fires
+`pointerlockchange`, which the existing listener picks up, flips
+`pointerLocked` to `false`, and `game.ts`'s `render()` responds by drawing
+a pulsing "Click to resume aiming" prompt (`drawPointerLockPrompt()`)
+whenever `phase === 'playing' && !input.pointerLocked` — covering Escape,
+alt-tab, or any other browser-initiated release, not just Escape
+specifically. Clicking anywhere on the canvas after that re-triggers the
+same `mousedown` -> `requestPointerLock()` path, re-engaging it with no
+separate "click to lock" affordance needed.
+
+Custom crosshair: `game.ts`'s `render()` now draws a small crosshair
+(`drawCrosshair()`, a simple four-tick-mark reticle plus a center dot) at
+`input.mouseX`/`mouseY` in screen space whenever `input.pointerLocked` is
+true, since `style.css`'s `cursor: crosshair` rule has no visible effect
+once the OS cursor is hidden by pointer lock — this becomes the sole aim
+feedback while locked, drawn every frame after the HUD so it's always on
+top.
+
+**Explicit, upfront caveat (repeating the task brief's framing, not
+softening it):** this is a mitigation attempt for a bug that could not be
+reproduced anywhere in this development environment (extensive prior
+testing — held keys, simulated OS key-repeat, continuous mouse movement,
+exception monitoring — found zero bugs in this game's own update/render/
+input code; the suspected cause is a Brave/Chromium-on-Wayland compositor
+bug in OS-cursor redraw under certain keyboard+pointer event interleavings,
+i.e. platform-level, not something more code review here could find or
+fix). Switching to Pointer Lock removes the OS-rendered cursor from the
+interaction entirely, which is the standard mitigation browser games use
+for exactly this class of platform bug — but whether it actually resolves
+*this specific* reported freeze can only be confirmed by the user testing
+it on their real Brave/KDE Plasma/Wayland desktop. It also has a real UX
+cost regardless of whether it fixes the bug: the OS cursor is now hidden
+and captured during play, Escape releases it (standard browser behavior,
+not a choice made here), and re-engaging requires a click — all called out
+here as the tradeoff, not hidden behind "this fixes it."
+
+### Verification for this pass
+
+- `npm run build` (tsc + vite build) passes clean.
+- Playwright smoke run against `npm run dev` (headless Chromium, both
+  1280x800 general testing and specifically 1280x720/1024x768/1600x900 for
+  the shop panel):
+  - **Respawn (#1)**: forced `player.health.hp = 0; player.dead = true`
+    directly. Confirmed `phase` stayed `'playing'` (not `'gameover'`),
+    `playerRespawnActive` flipped true and `playerRespawnTimer` started
+    counting down from ~10. Fast-forwarded the timer to 0.05s and let one
+    more tick elapse: confirmed `player.dead === false`, `hp === 100`
+    (full), and `entities.includes(player) === true` (re-added after the
+    cull had removed it) — the full death -> countdown -> respawn cycle
+    works end-to-end without ending the run.
+  - **Core lives (#2)**: forced `core.dead = true` three times in
+    sequence. First two: `phase` stayed `'playing'`, `coreLives` stepped
+    3->2->1, and (checked on loss 1) `core.health.hp` was refilled to
+    1000 (its max). Third: `phase` became `'gameover'` and `coreLives`
+    read 0 — confirmed the "only the 3rd loss ends the run" behavior
+    exactly.
+  - **Warp hotkey (#3)**: set `player.{x,y} = {100,100}`, pressed `G`,
+    confirmed the player jumped to `{2460, 4520}` (`CORE.x+60, CORE.y-60`
+    on this build's world size) in the very next tick. Re-tested the same
+    key press while pointer lock was engaged (see below) — still worked
+    identically, confirming keyboard bindings are unaffected by pointer
+    lock capturing the mouse.
+  - **Shop panel fit (#4)**: read `ShopPanel`'s private `layout()` output
+    directly at 1280x720, 1024x768 and 1600x900 for both tabs. Weapons tab
+    (8 rows, the fullest): panel height computed as 502px at every
+    viewport (it's viewport-independent once it fits, since it's driven by
+    content, not screen size) with `scrollable: false` at all three, and
+    `y >= 0 && y + h <= screenH` held at all three (e.g. at 1280x720:
+    `y: 109, h: 502` -> bottom at 611, well inside 720). Base tab (5 rows):
+    376px tall, likewise fits everywhere checked. Screenshotted the shop
+    at 1280x720 and 1024x768 (Weapons tab): all 8 rows fully visible,
+    including their price/buy-button text on the right edge, with no
+    clipping top or bottom, and the "Click a row to buy. Press E to close"
+    footer line visible below the last row in both.
+  - **Weapon visuals (#5)**: screenshotted the player with `activeSlot`
+    cycled through 1 (rifle)/2 (pistol)/3 (wand) in both `renderStyle`
+    values ('detailed' and 'flat'). Initial pass showed rifle vs. pistol
+    as too visually similar at default zoom (barrel lengths `r+24` vs.
+    `r+8` didn't read as distinctly different at the on-screen player
+    size), so both were pushed further apart (`r+32` vs. `r+5`, thicker
+    strokes, bigger stock/grip blocks) and re-screenshotted — the second
+    pass shows a clearly long gun-with-stock vs. a clearly short stub, and
+    the wand's glowing purple tip was distinct from both in every
+    screenshot from the first pass onward. Confirmed the barrel-pullback
+    recoil animation still visibly shortens whichever shape is drawn (the
+    shared `drawPlayerHeldItem` subtracts the same `pullback` from every
+    weapon's base length).
+  - **Pointer lock (#6)**: clicking the canvas in headless Chromium
+    successfully engaged `document.pointerLockElement` and
+    `input.pointerLocked` — the request/engage/`pointerlockchange` wiring
+    all work as written. `document.exitPointerLock()` called directly
+    correctly flipped `pointerLocked` back to `false`, and the "Click to
+    resume aiming" prompt rendered on the next frame; a subsequent click
+    re-engaged the lock. **Two things could NOT be confirmed in this
+    headless environment** and need the user's real machine: (1)
+    `page.mouse.move()`'s synthetic input under CDP did not produce
+    non-zero `movementX`/`movementY` while locked (both before/after
+    virtual-mouse reads came back `{0,0}`) — this is a documented
+    limitation of automating real OS-level pointer-lock deltas via
+    synthetic input, not evidence the relative-delta code is wrong (the
+    code path is a direct, unconditional read of the standard
+    `MouseEvent.movementX/Y` fields, which real hardware/OS input reliably
+    populates); and (2) pressing `Escape` via `page.keyboard.press` did
+    **not** trigger the browser's native pointer-lock release in this
+    headless CDP session (`pointerLockElement` stayed set) — again
+    consistent with headless/automated-input limitations around
+    browser-chrome-level shortcuts rather than a bug in this game's
+    `pointerlockchange` handling, which was separately confirmed correct
+    via the manual `exitPointerLock()` call above. **Bottom line: the
+    pointer-lock engage/release/re-engage state machine and the crosshair/
+    prompt UI it drives are verified working; whether it actually resolves
+    the user's real cursor-freeze symptom, and whether relative-mouse aim
+    feels correct with real Wayland/Brave mouse hardware, can only be
+    confirmed by the user on their actual machine.**
+  - No `pageerror`/`console.error` events across any of the above runs.

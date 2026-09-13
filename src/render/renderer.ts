@@ -171,6 +171,81 @@ function shapeColorWithFlash(e: Entity): string {
   return e.color;
 }
 
+// ---------------------------------------------------------------------------
+// Round 9: player held-item visuals (item #5). Drawn in the player's local,
+// already-rotated frame (origin at the player's center, +x pointing along
+// the aim direction) — the same frame the old plain barrel-line drew in —
+// so it composes with the existing recoil pullback unchanged. Shared by both
+// render/renderer.ts (flat style) and render/rendererDetailed.ts (detailed
+// style, which additionally underlays a dark stroke for a bit of depth); see
+// the `detailed` flag below. See DECISIONS.md for the shape/color choices.
+// ---------------------------------------------------------------------------
+export type HeldItem = 'rifle' | 'pistol' | 'wand';
+
+export function drawPlayerHeldItem(
+  ctx: CanvasRenderingContext2D,
+  r: number,
+  pixelScale: number,
+  pullbackWorld: number,
+  heldItem: HeldItem,
+  detailed: boolean,
+): void {
+  const pullback = pullbackWorld * pixelScale;
+
+  function strokeBarrel(len: number, width: number, lightColor: string): void {
+    if (detailed) {
+      ctx.strokeStyle = '#2a2a2a';
+      ctx.lineWidth = Math.max(3, width + 1.5 * pixelScale);
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(len, 0);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = lightColor;
+    ctx.lineWidth = Math.max(1.5, width);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(len, 0);
+    ctx.stroke();
+  }
+
+  if (heldItem === 'pistol') {
+    // Short/stubby: a short, thin barrel plus a small grip block near the
+    // hand — deliberately much shorter than the rifle's silhouette below so
+    // the two guns read as distinct even at a glance/small zoom.
+    const len = Math.max(0, r + 5 * pixelScale - pullback);
+    strokeBarrel(len, 3 * pixelScale, '#dcdcdc');
+    ctx.fillStyle = '#4a4a4a';
+    ctx.fillRect(-2 * pixelScale, -4 * pixelScale, 8 * pixelScale, 8 * pixelScale);
+  } else if (heldItem === 'wand') {
+    // Rod distinct from both guns (thin, no stock/grip block) with a small
+    // glowing tip so it reads as "magic" rather than a third gun variant.
+    const len = Math.max(0, r + 18 * pixelScale - pullback);
+    strokeBarrel(len, 2.2 * pixelScale, '#9b7fe0');
+    const tipR = 5 * pixelScale;
+    ctx.fillStyle = 'rgba(159,123,230,0.35)';
+    ctx.beginPath();
+    ctx.arc(len, 0, tipR * 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#c39bd3';
+    ctx.beginPath();
+    ctx.arc(len, 0, tipR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#e8d8ff';
+    ctx.beginPath();
+    ctx.arc(len, 0, tipR * 0.45, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    // Rifle (default/fallback): noticeably longer + thicker barrel plus a
+    // stock block extending back past the player's center, opposite the
+    // muzzle — the "long gun" silhouette next to the pistol's stub above.
+    const len = Math.max(0, r + 32 * pixelScale - pullback);
+    strokeBarrel(len, 5 * pixelScale, '#f0f0f0');
+    ctx.fillStyle = '#3a3a3a';
+    ctx.fillRect(-14 * pixelScale, -4 * pixelScale, 14 * pixelScale, 8 * pixelScale);
+  }
+}
+
 export function drawEntity(ctx: CanvasRenderingContext2D, camera: Camera, e: Entity, alpha: number): void {
   const { x, y } = interpolatedPos(e, alpha);
   const p = camera.worldToScreen(x, y);
@@ -215,16 +290,11 @@ export function drawEntity(ctx: CanvasRenderingContext2D, camera: Camera, e: Ent
   }
 
   if (e.kind === 'player') {
-    // Recoil pulls the barrel line back toward the player on fire and eases
-    // back out (see combat/playerWeapons.ts / game.ts render()).
-    const pullback = (e.barrelPullback ?? 0) * camera.pixelScale;
-    const barrelLen = Math.max(0, r + 14 * camera.pixelScale - pullback);
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = Math.max(2, 3 * camera.pixelScale);
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(barrelLen, 0);
-    ctx.stroke();
+    // Recoil pulls the held-item pullback back toward the player on fire and
+    // eases back out (see combat/playerWeapons.ts / game.ts render()); the
+    // exact shape drawn depends on the currently-equipped weapon (round 9,
+    // item #5 — see drawPlayerHeldItem above).
+    drawPlayerHeldItem(ctx, r, camera.pixelScale, e.barrelPullback ?? 0, e.heldItem ?? 'rifle', false);
   }
 
   ctx.restore();
