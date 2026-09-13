@@ -3,10 +3,14 @@ import { describeItem } from '../economy/describe.ts';
 import { nextPrice, type ShopItemId, type ShopLevels } from '../economy/shop.ts';
 import { playSfx } from '../audio/sfx.ts';
 
-const PANEL_W = 560;
-const PANEL_H = 520;
-const ROW_H = 40;
-const TAB_H = 36;
+// Round 7: enlarged alongside the 2x UI text (see DECISIONS.md) — panel
+// width/row height/tab height all grown enough that the doubled fonts below
+// have room without overlapping or clipping.
+const PANEL_W = 860;
+const PANEL_H = 760;
+const ROW_H = 62;
+const TAB_H = 56;
+const TAB_W = 260;
 const PRESS_FLASH_DURATION = 0.12; // seconds a clicked row briefly flashes/scales down
 
 export type ShopTab = 'weapons' | 'base';
@@ -40,15 +44,15 @@ export class ShopPanel {
     const { x, y, w } = this.layout(screenW, screenH);
     if (mx < x || mx > x + w || my < y || my > y + PANEL_H) return null;
 
-    const tabY = y + 44;
+    const tabY = y + 76;
     if (my >= tabY && my <= tabY + TAB_H) {
-      if (mx >= x + 20 && mx <= x + 20 + 150) return { kind: 'tab', tab: 'weapons' };
-      if (mx >= x + 180 && mx <= x + 180 + 150) return { kind: 'tab', tab: 'base' };
+      if (mx >= x + 24 && mx <= x + 24 + TAB_W) return { kind: 'tab', tab: 'weapons' };
+      if (mx >= x + 24 + TAB_W + 20 && mx <= x + 24 + TAB_W + 20 + TAB_W) return { kind: 'tab', tab: 'base' };
       return null;
     }
 
     const rows = this.rowsForTab(this.activeTab);
-    const listTop = tabY + TAB_H + 12;
+    const listTop = tabY + TAB_H + 18;
     for (let i = 0; i < rows.length; i++) {
       const rowY = listTop + i * ROW_H;
       if (my >= rowY && my <= rowY + ROW_H - 4) return { kind: 'row', id: rows[i] };
@@ -115,22 +119,24 @@ export class ShopPanel {
     ctx.strokeRect(x, y, w, h);
 
     ctx.fillStyle = '#f0f0f0';
-    ctx.font = 'bold 20px sans-serif';
+    ctx.font = 'bold 40px sans-serif';
     ctx.textBaseline = 'top';
-    ctx.fillText('Shop', x + 20, y + 12);
-    ctx.font = '14px sans-serif';
+    ctx.fillText('Shop', x + 24, y + 20);
+    ctx.font = '28px sans-serif';
     ctx.fillStyle = '#ffd700';
-    ctx.fillText(`Coins: ${coins}`, x + w - 140, y + 16);
+    ctx.textAlign = 'right';
+    ctx.fillText(`Coins: ${coins}`, x + w - 24, y + 28);
+    ctx.textAlign = 'left';
 
-    const tabY = y + 44;
+    const tabY = y + 76;
     const weaponsHovered = this.hover?.kind === 'tab' && this.hover.tab === 'weapons';
     const baseHovered = this.hover?.kind === 'tab' && this.hover.tab === 'base';
-    this.drawTab(ctx, x + 20, tabY, 150, TAB_H, 'Weapons', this.activeTab === 'weapons', weaponsHovered);
-    this.drawTab(ctx, x + 180, tabY, 150, TAB_H, 'Base', this.activeTab === 'base', baseHovered);
+    this.drawTab(ctx, x + 24, tabY, TAB_W, TAB_H, 'Weapons', this.activeTab === 'weapons', weaponsHovered);
+    this.drawTab(ctx, x + 24 + TAB_W + 20, tabY, TAB_W, TAB_H, 'Base', this.activeTab === 'base', baseHovered);
 
     const rows = this.rowsForTab(this.activeTab);
-    const listTop = tabY + TAB_H + 12;
-    ctx.font = '13px sans-serif';
+    const listTop = tabY + TAB_H + 18;
+    ctx.font = '26px sans-serif';
     for (let i = 0; i < rows.length; i++) {
       const id = rows[i];
       const def = SHOP_ITEMS.find((d) => d.id === id)!;
@@ -167,25 +173,26 @@ export class ShopPanel {
         ctx.strokeRect(x + 16.75, rowY + 0.75, w - 33.5, ROW_H - 5.5);
       }
 
+      ctx.font = '26px sans-serif';
       ctx.fillStyle = affordable ? '#f0f0f0' : '#6b7280';
-      ctx.fillText(`${def.label}  (Lv ${level})`, x + 24, rowY + 12);
+      ctx.fillText(`${def.label}  (Lv ${level})`, x + 24, rowY + 16);
 
       const { current, next } = describeItem(id, levels);
       ctx.fillStyle = affordable ? '#9fd3ff' : '#5a6472';
-      ctx.font = '12px sans-serif';
-      ctx.fillText(`${current} -> ${next}`, x + 260, rowY + 13);
-      ctx.font = '13px sans-serif';
+      ctx.font = '22px sans-serif';
+      ctx.fillText(`${current} -> ${next}`, x + 460, rowY + 19);
 
+      ctx.font = '26px sans-serif';
       ctx.fillStyle = affordable ? '#ffd700' : '#6b7280';
       ctx.textAlign = 'right';
-      ctx.fillText(`${cost}c`, x + w - 24, rowY + 12);
+      ctx.fillText(`${cost}c`, x + w - 24, rowY + 16);
       ctx.textAlign = 'left';
       ctx.restore();
     }
 
     ctx.fillStyle = '#9aa4b2';
-    ctx.font = '12px sans-serif';
-    ctx.fillText('Click a row to buy. Press E to close.', x + 20, y + h - 22);
+    ctx.font = '22px sans-serif';
+    ctx.fillText('Click a row to buy. Press E to close.', x + 24, y + h - 40);
     ctx.restore();
   }
 
@@ -197,9 +204,11 @@ export class ShopPanel {
     ctx.strokeRect(x, y, w, h);
     ctx.lineWidth = 1;
     ctx.fillStyle = active ? '#ffffff' : '#9aa4b2';
-    ctx.font = '14px sans-serif';
+    ctx.font = '28px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(label, x + w / 2, y + h / 2 - 7);
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, x + w / 2, y + h / 2);
     ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
   }
 }

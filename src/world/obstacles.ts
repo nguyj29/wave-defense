@@ -1,10 +1,10 @@
-import { OBSTACLES, WORLD } from '../config.ts';
+import { OBSTACLES, ROAD_GRID, WORLD } from '../config.ts';
 import { Rng } from '../engine/rng.ts';
 import { dist } from '../engine/vec.ts';
 import {
   BASE_CLEAR_RECT,
-  distToSegment,
-  LANE_SEGMENTS,
+  onRoadGrid,
+  ROAD_LINES,
   SPAWN_POINT_CLEAR_RADIUS,
   SPAWN_POINTS,
   SPAWNER_POSITIONS,
@@ -38,20 +38,13 @@ function inSpawnPointClearZone(x: number, y: number): boolean {
   return false;
 }
 
-function inLaneClearZone(x: number, y: number): boolean {
-  for (const lane of LANE_SEGMENTS) {
-    if (distToSegment(x, y, lane.x1, lane.y1, lane.x2, lane.y2) < lane.width / 2) return true;
-  }
-  return false;
-}
-
 function validPlacement(x: number, y: number, radius: number): boolean {
   if (x - radius < 0 || x + radius > WORLD.width || y - radius < 0 || y + radius > WORLD.height) {
     return false;
   }
   if (inBaseClearZone(x, y)) return false;
   if (inSpawnPointClearZone(x, y)) return false;
-  if (inLaneClearZone(x, y)) return false;
+  if (onRoadGrid(x, y)) return false;
   return true;
 }
 
@@ -60,7 +53,7 @@ interface Patch {
   y: number;
 }
 
-/** Picks patch centers away from the base and lane corridors, so forest reads as clumps off to the sides. */
+/** Picks patch centers away from the base and road grid, so forest reads as clumps inside each block's interior. */
 function generatePatchCenters(rng: Rng, count: number): Patch[] {
   const patches: Patch[] = [];
   let attempts = 0;
@@ -69,18 +62,14 @@ function generatePatchCenters(rng: Rng, count: number): Patch[] {
     const x = rng.range(150, WORLD.width - 150);
     const y = rng.range(150, WORLD.height - 150);
     if (inBaseClearZone(x, y)) continue;
-    if (inLaneClearZone(x, y)) continue;
-    // Keep patch centers themselves off the lanes by a bit more than the
-    // lane clear width, so a patch's spread doesn't immediately bleed back
-    // onto the road.
-    let tooCloseToLane = false;
-    for (const lane of LANE_SEGMENTS) {
-      if (distToSegment(x, y, lane.x1, lane.y1, lane.x2, lane.y2) < lane.width / 2 + 80) {
-        tooCloseToLane = true;
-        break;
-      }
-    }
-    if (tooCloseToLane) continue;
+    // Keep patch centers off the road grid by a bit more than the road's
+    // own clear width (see onRoadGrid in map.ts), so a patch's spread
+    // doesn't immediately bleed back onto the road it's sitting next to.
+    const patchMargin = ROAD_GRID.width / 2 + 80;
+    const nearRoad =
+      ROAD_LINES.vertical.some((l) => Math.abs(x - l) < patchMargin) ||
+      ROAD_LINES.horizontal.some((l) => Math.abs(y - l) < patchMargin);
+    if (nearRoad) continue;
     patches.push({ x, y });
   }
   return patches;

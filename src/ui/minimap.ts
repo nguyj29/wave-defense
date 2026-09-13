@@ -94,9 +94,9 @@ export function drawMinimap(
 export function drawBossWarningBanner(ctx: CanvasRenderingContext2D, screenW: number): void {
   ctx.save();
   ctx.textAlign = 'center';
-  ctx.font = 'bold 22px sans-serif';
+  ctx.font = 'bold 44px sans-serif';
   const pulse = 0.6 + 0.4 * Math.sin(performance.now() / 150);
   ctx.fillStyle = `rgba(255,40,40,${pulse})`;
-  ctx.fillText('WARNING: BOSS INCOMING', screenW / 2, 100);
+  ctx.fillText('WARNING: BOSS INCOMING', screenW / 2, 160);
   ctx.restore();
 }

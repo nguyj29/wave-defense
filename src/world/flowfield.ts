@@ -32,8 +32,20 @@ class MinHeap {
     if (this.heap.length === 0) return undefined;
     const topDist = this.heap[0];
     const topIndex = this.heap[1];
-    const lastDist = this.heap.pop()!;
+    // Round 7 bugfix: pairs are stored flattened as [dist, index, dist,
+    // index, ...], so Array.pop() (removes from the END) yields the last
+    // pair's `index` field FIRST and its `dist` field SECOND — the previous
+    // code assigned these to variables named the other way around, silently
+    // swapping dist<->index every time the last element got moved to the
+    // root. That corrupts the heap's ordering (a cell index masquerading as
+    // a priority, and vice versa) without ever throwing, so recompute()
+    // still "worked" — it just degenerated into pushing millions of
+    // redundant heap entries instead of a normal O(V log V) Dijkstra,
+    // turning a <50ms one-time cost into multiple minutes. Confirmed
+    // pre-existing (reproduces bit-for-bit on the pre-round-7 committed
+    // code, unrelated to this round's map changes) — see DECISIONS.md.
     const lastIndex = this.heap.pop()!;
+    const lastDist = this.heap.pop()!;
     if (this.heap.length > 0) {
       this.heap[0] = lastDist;
       this.heap[1] = lastIndex;

@@ -51,10 +51,10 @@ function drawBar(ctx: CanvasRenderingContext2D, x: number, y: number, w: number,
   ctx.strokeStyle = 'rgba(255,255,255,0.4)';
   ctx.strokeRect(x, y, w, h);
   ctx.fillStyle = '#fff';
-  ctx.font = '12px sans-serif';
+  ctx.font = '24px sans-serif'; // 2x (round 7): all UI text doubled, see DECISIONS.md
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText(label, x + 6, y + h / 2);
+  ctx.fillText(label, x + 10, y + h / 2);
 }
 
 // One entry per equippable slot, in display order — shape-based icon plus
@@ -68,11 +68,13 @@ const SLOTS: { slot: 1 | 2 | 3; label: string; color: string }[] = [
 
 /** 3-slot weapon/wand inventory bar, bottom-right, with the active slot outlined and a small per-slot readiness sliver. */
 function drawInventorySlots(ctx: CanvasRenderingContext2D, screenW: number, screenH: number, d: HudData): void {
-  const size = 44;
+  // Bumped from 44 (round 7) so the doubled slot-number label (11px -> 22px)
+  // has room to sit inside the box without crowding the icon.
+  const size = 52;
   const gap = 8;
   const totalW = SLOTS.length * size + (SLOTS.length - 1) * gap;
   const startX = screenW - 16 - totalW;
-  const y = screenH - 56 - size - 22; // stacked above the ammo/summon-cooldown row
+  const y = screenH - 76 - size - 40; // stacked above the ammo/summon-cooldown row (see layout note in drawHud)
 
   for (let i = 0; i < SLOTS.length; i++) {
     const s = SLOTS[i];
@@ -116,10 +118,10 @@ function drawInventorySlots(ctx: CanvasRenderingContext2D, screenW: number, scre
     ctx.strokeRect(x, y, size, size);
 
     ctx.fillStyle = active ? '#ffffff' : 'rgba(255,255,255,0.7)';
-    ctx.font = '11px sans-serif';
+    ctx.font = '22px sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
-    ctx.fillText(s.label, x + 4, y + 13);
+    ctx.fillText(s.label, x + 5, y + 22);
   }
 }
 
@@ -130,57 +132,57 @@ export function drawHud(ctx: CanvasRenderingContext2D, screenW: number, screenH:
 
   // Music mute indicator, small and out of the way (top-right).
   ctx.textAlign = 'right';
-  ctx.font = '12px sans-serif';
+  ctx.font = '24px sans-serif';
   ctx.fillStyle = d.musicMuted ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.8)';
-  ctx.fillText(d.musicMuted ? '♪ off (M)' : '♪ on (M)', screenW - 16, 16);
+  ctx.fillText(d.musicMuted ? '♪ off (M)' : '♪ on (M)', screenW - 16, 24);
 
   // Current difficulty, small and unobtrusive, just below the music toggle.
   // A colored swatch (with a thin light border, since Hell's color is
   // near-black and would otherwise vanish against the canvas) plus a plain
   // white label reads clearly regardless of which difficulty color is active.
   {
-    const swatchSize = 10;
+    const swatchSize = 18;
     const swatchX = screenW - 16 - swatchSize;
-    const swatchY = 32 - swatchSize / 2;
+    const swatchY = 56 - swatchSize / 2;
     ctx.fillStyle = d.difficultyColor;
     ctx.fillRect(swatchX, swatchY, swatchSize, swatchSize);
     ctx.strokeStyle = 'rgba(255,255,255,0.5)';
     ctx.lineWidth = 1;
     ctx.strokeRect(swatchX, swatchY, swatchSize, swatchSize);
-    ctx.font = '11px sans-serif';
+    ctx.font = '22px sans-serif';
     ctx.fillStyle = 'rgba(255,255,255,0.8)';
-    ctx.fillText(d.difficultyLabel, swatchX - 6, 32);
+    ctx.fillText(d.difficultyLabel, swatchX - 10, 56);
   }
 
   // Player HP (bottom-left)
-  drawBar(ctx, 16, screenH - 56, 220, 22, d.playerHp / d.playerMaxHp, '#5ec96a', `HP ${Math.ceil(d.playerHp)}/${d.playerMaxHp}`);
+  drawBar(ctx, 16, screenH - 84, 320, 34, d.playerHp / d.playerMaxHp, '#5ec96a', `HP ${Math.ceil(d.playerHp)}/${d.playerMaxHp}`);
   // Core HP (bottom-left, above player)
-  drawBar(ctx, 16, screenH - 86, 220, 22, d.coreHp / d.coreMaxHp, '#4ea3d1', `Core ${Math.ceil(d.coreHp)}/${Math.round(d.coreMaxHp)}`);
+  drawBar(ctx, 16, screenH - 132, 320, 34, d.coreHp / d.coreMaxHp, '#4ea3d1', `Core ${Math.ceil(d.coreHp)}/${Math.round(d.coreMaxHp)}`);
 
   if (d.godMode) {
     ctx.fillStyle = '#ffd700';
-    ctx.font = 'bold 12px sans-serif';
-    ctx.fillText('GOD MODE', 16, screenH - 100);
+    ctx.font = 'bold 24px sans-serif';
+    ctx.fillText('GOD MODE', 16, screenH - 148);
   }
 
-  // Weapon / ammo (bottom-right area)
+  // Weapon / ammo (bottom-right area, above the inventory slot bar)
   ctx.textAlign = 'right';
-  ctx.font = 'bold 16px sans-serif';
+  ctx.font = 'bold 32px sans-serif';
   ctx.fillStyle = '#fff';
-  ctx.fillText(d.weaponLabel, screenW - 16, screenH - 70);
-  ctx.font = '13px sans-serif';
+  ctx.fillText(d.weaponLabel, screenW - 16, screenH - 106);
+  ctx.font = '26px sans-serif';
   ctx.fillStyle = '#cfd8e3';
-  ctx.fillText(d.ammoText, screenW - 16, screenH - 50);
+  ctx.fillText(d.ammoText, screenW - 16, screenH - 76);
 
   // Summon cooldown
   const summonPct = d.summonCooldownTotal > 0 ? 1 - d.summonCooldownRemaining / d.summonCooldownTotal : 1;
   ctx.textAlign = 'left';
   drawBar(
     ctx,
-    screenW - 220 - 16,
-    screenH - 30,
-    220,
-    18,
+    screenW - 320 - 16,
+    screenH - 46,
+    320,
+    30,
     summonPct,
     d.summonCooldownRemaining <= 0 ? '#c39bd3' : '#5a4a63',
     d.summonCooldownRemaining <= 0
@@ -190,15 +192,15 @@ export function drawHud(ctx: CanvasRenderingContext2D, screenW: number, screenH:
 
   // Coins + wave (top area)
   ctx.textAlign = 'left';
-  ctx.font = 'bold 16px sans-serif';
+  ctx.font = 'bold 32px sans-serif';
   ctx.fillStyle = '#ffd700';
-  ctx.fillText(`Coins: ${d.coins}`, 16, 16);
+  ctx.fillText(`Coins: ${d.coins}`, 16, 28);
 
   ctx.fillStyle = '#fff';
-  ctx.fillText(`Wave ${d.waveNumber}/${d.totalWaves}`, 16, 40);
-  ctx.font = '13px sans-serif';
+  ctx.fillText(`Wave ${d.waveNumber}/${d.totalWaves}`, 16, 76);
+  ctx.font = '26px sans-serif';
   ctx.fillStyle = '#cfd8e3';
-  ctx.fillText(`Enemies alive: ${d.enemiesAlive}`, 16, 62);
+  ctx.fillText(`Enemies alive: ${d.enemiesAlive}`, 16, 118);
 
   // Wave/intermission timer, centered top. Round 6: the running-phase timer
   // now only governs spawning, not the wave's end — once it hits 0 the label
@@ -207,45 +209,45 @@ export function drawHud(ctx: CanvasRenderingContext2D, screenW: number, screenH:
   // last enemy is dead).
   ctx.textAlign = 'center';
   if (d.wavePhase === 'running') {
-    ctx.font = 'bold 20px sans-serif';
+    ctx.font = 'bold 40px sans-serif';
     if (!d.spawningStopped) {
       ctx.fillStyle = '#fff';
-      ctx.fillText(`Spawning ends in: ${fmtTime(d.timeRemaining)}`, screenW / 2, 16);
+      ctx.fillText(`Spawning ends in: ${fmtTime(d.timeRemaining)}`, screenW / 2, 28);
     } else if (d.enemiesAlive > 0) {
       const pulse = 0.7 + 0.3 * Math.sin(performance.now() / 200);
       ctx.fillStyle = `rgba(255,214,102,${pulse})`;
-      ctx.fillText('Clearing remaining enemies...', screenW / 2, 16);
+      ctx.fillText('Clearing remaining enemies...', screenW / 2, 28);
     } else {
       ctx.fillStyle = '#fff';
-      ctx.fillText('Wave clear!', screenW / 2, 16);
+      ctx.fillText('Wave clear!', screenW / 2, 28);
     }
   } else if (d.wavePhase === 'intermission') {
-    ctx.font = 'bold 20px sans-serif';
+    ctx.font = 'bold 40px sans-serif';
     ctx.fillStyle = '#ffd766';
-    ctx.fillText(`Next wave in ${fmtTime(d.timeRemaining)}`, screenW / 2, 16);
-    ctx.font = '13px sans-serif';
+    ctx.fillText(`Next wave in ${fmtTime(d.timeRemaining)}`, screenW / 2, 28);
+    ctx.font = '26px sans-serif';
     ctx.fillStyle = '#ffe9b0';
-    ctx.fillText(`Space to call early — bonus +${Math.round(d.earlyCallBonusPreview * 100)}%`, screenW / 2, 40);
+    ctx.fillText(`Space to call early — bonus +${Math.round(d.earlyCallBonusPreview * 100)}%`, screenW / 2, 74);
   }
   ctx.textAlign = 'left';
 
   // Boss bar
   if (d.bossAlive) {
-    const bw = 500;
+    const bw = 700;
     ctx.textAlign = 'center';
-    ctx.font = 'bold 14px sans-serif';
+    ctx.font = 'bold 28px sans-serif';
     ctx.fillStyle = '#ff8080';
-    ctx.fillText('BOSS', screenW / 2, 60);
+    ctx.fillText('BOSS', screenW / 2, 130);
     ctx.textAlign = 'left';
-    drawBar(ctx, screenW / 2 - bw / 2, 74, bw, 18, d.bossHp / d.bossMaxHp, '#8b0000', `${Math.ceil(d.bossHp)}/${d.bossMaxHp}`);
+    drawBar(ctx, screenW / 2 - bw / 2, 148, bw, 30, d.bossHp / d.bossMaxHp, '#8b0000', `${Math.ceil(d.bossHp)}/${d.bossMaxHp}`);
   }
 
   // Shop prompt
   if (d.shopPromptVisible) {
     ctx.textAlign = 'center';
-    ctx.font = 'bold 16px sans-serif';
+    ctx.font = 'bold 32px sans-serif';
     ctx.fillStyle = '#fff';
-    ctx.fillText('Press E to open shop', screenW / 2, screenH - 120);
+    ctx.fillText('Press E to open shop', screenW / 2, screenH - 200);
     ctx.textAlign = 'left';
   }
 

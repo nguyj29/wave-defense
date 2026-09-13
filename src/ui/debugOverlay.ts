@@ -14,9 +14,9 @@ export interface DebugData {
 export function drawDebugOverlay(ctx: CanvasRenderingContext2D, d: DebugData): void {
   ctx.save();
   ctx.fillStyle = 'rgba(0,0,0,0.6)';
-  ctx.fillRect(8, 8, 230, 164);
+  ctx.fillRect(8, 8, 780, 340);
   ctx.fillStyle = '#7CFC00';
-  ctx.font = '12px monospace';
+  ctx.font = '24px monospace'; // 2x (round 7), line spacing/panel size scaled to match — see DECISIONS.md
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   const lines = [
@@ -32,7 +32,7 @@ export function drawDebugOverlay(ctx: CanvasRenderingContext2D, d: DebugData): v
     'F7 spawn readout  F8 force boss',
     'F10 toggle render style',
   ];
-  lines.forEach((line, i) => ctx.fillText(line, 16, 16 + i * 14));
+  lines.forEach((line, i) => ctx.fillText(line, 16, 16 + i * 28));
   ctx.restore();
 }
 
@@ -53,15 +53,16 @@ export interface SpawnReadoutData {
 }
 
 export function drawSpawnReadout(ctx: CanvasRenderingContext2D, screenW: number, d: SpawnReadoutData): void {
-  const w = 260;
-  const h = 216;
+  // Doubled alongside the 2x text (round 7) — see DECISIONS.md.
+  const w = 520;
+  const h = 400;
   const x = screenW - w - 8;
   const y = 200;
   ctx.save();
   ctx.fillStyle = 'rgba(0,0,0,0.6)';
   ctx.fillRect(x, y, w, h);
   ctx.fillStyle = '#7CFC00';
-  ctx.font = '12px monospace';
+  ctx.font = '24px monospace';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   const lines = [
@@ -75,13 +76,13 @@ export function drawSpawnReadout(ctx: CanvasRenderingContext2D, screenW: number,
     `spawn point: ${d.activeSpawnPointId}`,
     d.pauseTimer > 0 ? `paused: ${d.pauseTimer.toFixed(1)}s` : `clump: ${d.clumpProgress}/${d.clumpTarget}`,
   ];
-  lines.forEach((line, i) => ctx.fillText(line, x + 8, y + 8 + i * 14));
+  lines.forEach((line, i) => ctx.fillText(line, x + 16, y + 16 + i * 28));
 
   // Small rolling graph of currentRate.
-  const graphX = x + 8;
-  const graphY = y + h - 32;
-  const graphW = w - 16;
-  const graphH = 24;
+  const graphX = x + 16;
+  const graphY = y + h - 56;
+  const graphW = w - 32;
+  const graphH = 40;
   ctx.strokeStyle = 'rgba(255,255,255,0.3)';
   ctx.strokeRect(graphX, graphY, graphW, graphH);
   ctx.strokeStyle = '#7CFC00';

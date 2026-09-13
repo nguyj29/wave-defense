@@ -18,23 +18,33 @@ export const WORLD = {
 };
 
 export const OBSTACLES = {
-  // Scaled up ~2.25x (the world area ratio: (4800/3200)^2) from the previous
-  // 46/16 so density per unit area stays roughly the same on the bigger map
-  // instead of reading emptier — see DECISIONS.md round 5.
-  treeCount: 104,
+  // Round 7: recalculated for the grid-of-roads map (see DECISIONS.md). The
+  // road grid (ROAD_GRID) removes noticeably less open area than the old
+  // maze lane system did (a thin lattice of 160-wide strips vs. several
+  // wide 180-wide corridors sprawling diagonally-ish across the map), so
+  // there's more usable block-interior area than before — counts bumped up
+  // from 104/36 accordingly so the green blocks still read as "scattered
+  // forest" rather than emptier than the old map.
+  treeCount: 150,
   treeRadius: 18,
-  rockCountMin: 36, // still enough cover near lanes for archer-kiting
+  rockCountMin: 54, // still enough cover in the blocks for archer-kiting
   rockRadius: [24, 40] as [number, number],
   rockVertsRange: [6, 9] as [number, number],
-  // Forest is placed in a handful of irregular patches off to the sides of
-  // the lanes rather than uniformly across the map (see DECISIONS.md) —
-  // patchCount/patchRadius control how clumped it reads. Scaled by ~1.5x
-  // (linear dimension ratio) alongside the area-scaled counts above.
-  patchCount: 9,
-  patchRadius: 630,
+  // Forest is placed in patches sized to fit comfortably inside one grid
+  // block's interior (block interior is roughly
+  // ROAD_GRID.spacing - ROAD_GRID.width = 640 units across) rather than the
+  // old wide multi-block patches, so a patch doesn't spill across a road
+  // into the next block (obstacles landing on the road are simply rejected
+  // by validPlacement, but an oversized patch would waste a lot of
+  // placement attempts on rejected candidates). patchCount raised so patches
+  // are spread across more of the 36 blocks.
+  patchCount: 26,
+  patchRadius: 260,
   // Fraction of obstacles placed via pure uniform scatter (not clumped into
-  // a patch) so the map doesn't look unnaturally polka-dotted.
-  scatterFraction: 0.15,
+  // a patch) — raised slightly from 0.15 since the grid's many separate
+  // block interiors already provide natural visual separation, so a bit
+  // more scatter still reads as "forest," not polka-dotted.
+  scatterFraction: 0.2,
 };
 
 export const CORE = {
@@ -79,34 +89,31 @@ export const SHOP = {
   interactRadius: 100,
 };
 
-// Concrete lane corridors connecting each active spawn point to the base's
-// nearest wall gap: kept obstacle-free and drawn as a distinct road strip.
-// See world/map.ts (LANES) and DECISIONS.md.
-export const LANES = {
-  width: 180,
-};
-
-// Maze-like Manhattan (axis-aligned only) lane geometry: each active spawn
-// point connects to the base via a short chain of horizontal/vertical
-// segments with one or two 90-degree turns, instead of one diagonal
-// straight line. Purely data — see world/map.ts::LANE_SEGMENTS for how this
-// is turned into concrete segment lists per spawn point, and DECISIONS.md
-// round 5 for why (no diagonal roads, a bit maze-like).
-export const LANE_MAZE = {
-  // Fraction of the vertical drop from a spawn point to the wall-gap row
-  // where each turn happens.
-  firstTurnFraction: 0.45,
-  secondTurnFraction: 0.75,
-  // A deliberate sideways jog applied at the path's midpoint even when the
-  // spawn point's x already matches its gap's x (e.g. top-middle) — without
-  // this, that lane would be a single straight vertical line with no turns
-  // at all. Alternates left/right per spawn point via buildLanePath's
-  // jogSign so it reads as a gentle zig-zag, not a big detour.
-  sidewaysJog: 220,
+// Round 7: the maze-style per-spawn-point lane system (LANE_SEGMENTS /
+// LANE_MAZE / buildLanePath) is REPLACED entirely by a uniform, map-wide
+// grid of roads — evenly spaced horizontal/vertical concrete strips, like
+// city blocks, with forest filling each block's interior. See world/map.ts
+// (ROAD_LINES) and DECISIONS.md round 7 for the spacing/width rationale.
+//
+// spacing=800 on the 4800x4800 world places grid lines at 800/1600/2400/
+// 3200/4000 in both axes — 5 lines each way, 36 blocks total — and, not by
+// coincidence, 2400 is both a grid line AND CORE.x (WORLD.width/2), so the
+// base's spawn lane naturally lines up with the road grid with no special-
+// casing. width=160 (kept close to the old LANES.width=180 "concrete strip"
+// footprint, trimmed slightly since there are now many more road strips
+// crossing the whole map rather than a few point-to-point corridors).
+export const ROAD_GRID = {
+  spacing: 800,
+  width: 160,
 };
 
 export const PLAYER = {
-  radius: 14,
+  // Round 7: bumped from 14 — the player and archer were both reading small
+  // next to grunt (14) and boss (45); see DECISIONS.md for the exact
+  // before/after numbers and why nothing else needed a code change (every
+  // consumer — collision, barrel-line length, muzzle offsets — already
+  // reads `e.radius`/`PLAYER.radius` live rather than hardcoding 14).
+  radius: 20,
   maxHp: 100,
   regenRate: 3, // hp/s
   regenDelay: 4, // seconds after last damage before regen starts
@@ -307,7 +314,10 @@ export const ENEMIES: Record<'grunt' | 'archer' | 'boss', EnemyDef> = {
     key: 'archer',
     shape: 'triangle',
     color: '#4b0082', // indigo
-    radius: 13,
+    // Round 7: bumped from 13, alongside the player radius bump — see
+    // DECISIONS.md. Same reasoning: every consumer reads e.radius live, so
+    // this is a pure data change.
+    radius: 19,
     hp: 24,
     speed: 80,
     meleeDamage: 0,
@@ -512,6 +522,40 @@ export interface DifficultyDef {
   enemyDmgMult: number;
   spawnRateMult: number; // scales SPAWN_DIRECTOR.baseRate/maxRate/aliveCap uniformly
   rewardMult: number; // scales coin + gem payout
+  // Round 7: the wave number (1-based, into WAVES) on which archers first
+  // appear for this difficulty tier. Normal (3) reproduces WAVES' own
+  // baseline exactly. Harder tiers introduce archers earlier — see
+  // getWaveForDifficulty() below for how this is actually applied (it pulls
+  // a fraction of an early wave's existing grunt budget into archers rather
+  // than adding extra enemies on top, so an earlier intro reads as "harder
+  // composition" without diluting/inflating the wave's total headcount) —
+  // and DECISIONS.md round 7 for the exact per-tier numbers and reasoning.
+  archerIntroWave: number;
+}
+
+// Fraction of a wave's total (grunts+archers) budget that becomes archers
+// when a difficulty tier introduces them earlier than WAVES' own baseline.
+// Kept modest (vs. wave 3's baseline ~29% archer share) so an early-Hell
+// wave 1 stays grunt-dominant rather than getting swarmed by kiting archers
+// before the player has any shop upgrades — see DECISIONS.md round 7.
+const DIFFICULTY_ARCHER_INTRO_SHARE = 0.25;
+
+/**
+ * Returns the actual per-wave enemy composition to spawn for a given
+ * difficulty: identical to `base` (a WAVES[] entry) unless this difficulty's
+ * `archerIntroWave` is earlier than `base.wave` would otherwise have
+ * archers, in which case a `DIFFICULTY_ARCHER_INTRO_SHARE` fraction of that
+ * wave's existing grunt+archer budget is converted to archers. Pure
+ * function of (base, difficulty) — no per-difficulty conditionals live in
+ * spawnDirector/behavior code, and extending WAVES to 25 entries needs no
+ * change here. See DECISIONS.md round 7.
+ */
+export function getWaveForDifficulty(base: WaveDef, difficultyId: DifficultyId): WaveDef {
+  const diff = DIFFICULTY[difficultyId];
+  if (base.archers > 0 || base.wave < diff.archerIntroWave) return base;
+  const total = base.grunts + base.archers;
+  const archers = Math.round(total * DIFFICULTY_ARCHER_INTRO_SHARE);
+  return { ...base, grunts: total - archers, archers };
 }
 
 export const DIFFICULTY: Record<DifficultyId, DifficultyDef> = {
@@ -523,6 +567,7 @@ export const DIFFICULTY: Record<DifficultyId, DifficultyDef> = {
     enemyDmgMult: 0.6,
     spawnRateMult: 0.75,
     rewardMult: 0.9,
+    archerIntroWave: 3, // same as Normal's baseline — Easy doesn't need pushing later still
   },
   normal: {
     label: 'Normal',
@@ -532,6 +577,7 @@ export const DIFFICULTY: Record<DifficultyId, DifficultyDef> = {
     enemyDmgMult: 1.0,
     spawnRateMult: 1.0,
     rewardMult: 1.0,
+    archerIntroWave: 3, // WAVES' own baseline — unchanged from before round 7
   },
   hard: {
     label: 'Hard',
@@ -541,6 +587,7 @@ export const DIFFICULTY: Record<DifficultyId, DifficultyDef> = {
     enemyDmgMult: 1.3,
     spawnRateMult: 1.2,
     rewardMult: 1.15,
+    archerIntroWave: 2, // one wave earlier than Normal
   },
   veryHard: {
     label: 'Very Hard',
@@ -550,6 +597,7 @@ export const DIFFICULTY: Record<DifficultyId, DifficultyDef> = {
     enemyDmgMult: 1.6,
     spawnRateMult: 1.45,
     rewardMult: 1.35,
+    archerIntroWave: 1, // archers from the very first wave
   },
   hell: {
     // Near-black rather than pure #000 so it still reads as "a color" (not a
@@ -561,5 +609,6 @@ export const DIFFICULTY: Record<DifficultyId, DifficultyDef> = {
     enemyDmgMult: 2.2,
     spawnRateMult: 1.8,
     rewardMult: 1.6,
+    archerIntroWave: 1, // archers from the very first wave, same as Very Hard
   },
 };

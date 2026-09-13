@@ -7,6 +7,7 @@ import {
   DIFFICULTY,
   ENEMIES,
   GEM,
+  getWaveForDifficulty,
   PLAYER,
   SHOP,
   SPAWN_DIRECTOR,
@@ -126,6 +127,10 @@ export class Game {
   currentWaveCoinBonus = 0;
 
   waveManager = new WaveManager();
+  // Placeholder default, immediately overwritten by reset() (called from the
+  // constructor) once `difficulty` has its real field-initializer value —
+  // class field initializers run top-to-bottom, so `this.difficulty` isn't
+  // safely readable yet at this point.
   spawnDirector = new SpawnDirector(this.waveManager.currentWave);
 
   phase: GamePhase = 'start';
@@ -214,7 +219,7 @@ export class Game {
     this.playerWeaponState = createPlayerWeaponState(this.shopLevels);
 
     this.waveManager = new WaveManager();
-    this.spawnDirector = new SpawnDirector(this.waveManager.currentWave, DIFFICULTY[this.difficulty].spawnRateMult);
+    this.spawnDirector = new SpawnDirector(getWaveForDifficulty(this.waveManager.currentWave, this.difficulty), DIFFICULTY[this.difficulty].spawnRateMult);
     this.rateHistory = [];
 
     this.camera.snapTo(this.player.x, this.player.y);
@@ -530,7 +535,7 @@ export class Game {
   }
 
   private onWaveTransition(bonus: number): void {
-    this.spawnDirector = new SpawnDirector(this.waveManager.currentWave, DIFFICULTY[this.difficulty].spawnRateMult);
+    this.spawnDirector = new SpawnDirector(getWaveForDifficulty(this.waveManager.currentWave, this.difficulty), DIFFICULTY[this.difficulty].spawnRateMult);
     this.currentWaveCoinBonus = bonus;
   }
 
@@ -810,15 +815,15 @@ export class Game {
     ctx.fillRect(0, 0, w, h);
     ctx.fillStyle = '#fff';
     ctx.textAlign = 'center';
-    ctx.font = 'bold 40px sans-serif';
+    ctx.font = 'bold 80px sans-serif';
     const info = this.gameOverInfo;
-    ctx.fillText(info?.victory ? 'PROTOTYPE COMPLETE' : 'GAME OVER', w / 2, h / 2 - 60);
-    ctx.font = '18px sans-serif';
+    ctx.fillText(info?.victory ? 'PROTOTYPE COMPLETE' : 'GAME OVER', w / 2, h / 2 - 100);
+    ctx.font = '36px sans-serif';
     ctx.fillText(`Wave reached: ${info?.waveReached ?? 1}`, w / 2, h / 2 - 10);
-    ctx.fillText(`Coins collected: ${info?.coins ?? 0}`, w / 2, h / 2 + 16);
-    ctx.font = '16px sans-serif';
+    ctx.fillText(`Coins collected: ${info?.coins ?? 0}`, w / 2, h / 2 + 42);
+    ctx.font = '32px sans-serif';
     ctx.fillStyle = '#9fd3ff';
-    ctx.fillText('Press R to restart', w / 2, h / 2 + 56);
+    ctx.fillText('Press R to restart', w / 2, h / 2 + 106);
     ctx.textAlign = 'left';
   }
 }

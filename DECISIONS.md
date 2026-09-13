@@ -1482,3 +1482,195 @@ hellish."
   whether the new coin-magnet-from-anywhere speed (650) feels right at
   actual play distances rather than the synthetic 2000-unit test case used
   here.
+
+## Bigger player/archer, difficulty-driven archer intro timing, grid-of-roads map, 2x UI text (round 7)
+
+This round picked up mid-flight from a prior agent session that was cut off
+by a rate limit partway through. The working tree already contained a
+substantially complete implementation of all four goals; this pass verified
+each against the goals, found and fixed one real bug (unrelated to this
+round's own changes — see the flow-field note below), and confirmed the
+rest via `npm run build` plus a Playwright smoke pass against `npm run dev`.
+
+### 1. Bigger player and archer
+
+- `PLAYER.radius`: 14 -> **20**. `ENEMIES.archer.radius`: 13 -> **19**.
+  Chosen judgmentally to read clearly larger next to grunt (14, unchanged)
+  and the boss (45, unchanged) without the player/archer approaching boss
+  scale.
+- Verified (by reading `entities/factory.ts`) that every consumer reads
+  `PLAYER.radius`/`e.radius` live rather than hardcoding the old 14/13:
+  collision radius, the barrel-line length (`r + 14 * camera.pixelScale -
+  pullback` in both `renderer.ts` and `rendererDetailed.ts` — the `14` there
+  is an unrelated fixed barrel-protrusion-past-the-hitbox constant, not the
+  old player radius, and needed no change), and muzzle offsets. No code
+  changes were needed here beyond the two config numbers the prior session
+  had already landed.
+
+### 2. Difficulty-driven archer introduction timing
+
+- Added `archerIntroWave` (a plain number field) per `DifficultyDef` tier:
+
+  | Difficulty | archerIntroWave |
+  |---|---|
+  | Easy | 3 (same as Normal's baseline) |
+  | Normal | 3 (WAVES' own unscaled baseline — unchanged) |
+  | Hard | 2 |
+  | Very Hard | 1 |
+  | Hell | 1 |
+
+- Implemented as pure data + one pure function
+  (`getWaveForDifficulty(base, difficultyId)` in `config.ts`), not
+  conditionals scattered through `SpawnDirector`/behavior code: if the
+  base `WaveDef` (from `WAVES`) already has archers, or the wave number is
+  still earlier than this difficulty's `archerIntroWave`, the wave is
+  returned unchanged. Otherwise a fixed `DIFFICULTY_ARCHER_INTRO_SHARE =
+  0.25` fraction of that wave's existing `grunts + archers` budget is
+  converted to archers (kept modest vs. wave 3's baseline ~29% archer
+  share, so an early-Hell wave 1 stays grunt-dominant rather than
+  swarming the player with kiting archers before any shop upgrades).
+  `game.ts` calls this at both initial `reset()` and every
+  `onWaveTransition()` when constructing `SpawnDirector`, so
+  `SpawnDirector`/`spawnDirector.ts` itself needed zero changes — it just
+  consumes whatever `WaveDef` it's handed.
+- Re-verified `enemyHpMult`/`enemyDmgMult` apply to all enemy kinds, not
+  just grunts: `Game.spawnEnemyFromRequest()` (`game.ts`) looks up
+  `ENEMIES[kind]` generically (`kind` being `'grunt' | 'archer' | 'boss'`)
+  and applies the multipliers to `hp`, `meleeDamage`, and — when the def
+  has a `ranged` block (archers) — `ranged.damage`. This was already
+  correct from a prior completed round; no change needed this round.
+
+### 3. Grid-of-roads map
+
+- Replaced the maze-lane system (`LANES`/`LANE_MAZE`/`LANE_SEGMENTS`/
+  `buildLanePath()`) entirely with `ROAD_GRID = { spacing: 800, width:
+  160 }` (`config.ts`) and `ROAD_LINES`/`onRoadGrid()` (`world/map.ts`):
+  evenly spaced vertical/horizontal lines at 800/1600/2400/3200/4000 on
+  the 4800x4800 world (5 lines per axis, 36 blocks total). 2400 is both a
+  grid line and `CORE.x`, so the base's spawn lane lines up with the grid
+  automatically. `width: 160` is close to the old `LANES.width` (180)
+  "concrete strip" footprint, trimmed slightly since there are now many
+  road strips crossing the whole map instead of a few point-to-point
+  corridors.
+- Spawn points now sit on the grid lines themselves (`world/map.ts`) —
+  the three wave-1 spawn points read as roads leading down onto the grid
+  rather than an arbitrary edge margin. The 3 active (wave-1) spawn
+  points remain top-left/top-middle/top-right; mid-left/mid-right still
+  unlock at wave 15 as before.
+- Obstacle placement (`world/obstacles.ts`) now excludes the road grid via
+  `onRoadGrid()`/`ROAD_LINES` instead of the old per-lane-segment distance
+  check, and patch centers are kept off the grid by `ROAD_GRID.width/2 +
+  80`. Counts were retuned for the new geometry (`config.ts::OBSTACLES`):
+  `treeCount` 104 -> **150**, `rockCountMin` 36 -> **54**, `patchCount` 9
+  -> **26**, `patchRadius` 630 -> **260** (sized to fit one block's
+  ~640-unit interior without spilling across a road), `scatterFraction`
+  0.15 -> **0.2**. Rationale: the road grid is a thinner lattice than the
+  old maze lanes' several wide corridors, so more open area exists overall
+  — counts were raised so the block interiors still read as "scattered
+  forest" rather than emptier than the old map.
+- Base wall/gap choke system (`WALL_SEGMENTS`, `BASE.gapOffsets`) is
+  entirely untouched — still bottom-middle, still the funnel mechanic
+  right at the base perimeter. The road grid is purely a visual/obstacle-
+  exclusion feature; the flow field only reads `WALL_SEGMENTS` + the
+  obstacle list, so pathfinding needed no change to keep funneling enemies
+  through the wall gaps on the new map (confirmed via screenshot: enemies'
+  spawn-to-gap flow is unaffected by the grid).
+- **Both F10 render styles already share the grid**: `drawWorldBackground()`
+  (`render/renderer.ts`) draws the road grid and is called unconditionally
+  in `game.ts`'s render loop before the style-specific
+  `drawObstacles(Detailed)`/`drawWalls(Detailed)` branch — so
+  `rendererDetailed.ts` needed *no changes at all* for the road grid to
+  appear in the detailed style too. Confirmed via screenshot: the grid,
+  spacing, and forest blocks are pixel-identical between F10's flat and
+  detailed styles (they only differ in obstacle/wall/entity shading, which
+  is `rendererDetailed.ts`'s actual job).
+
+### 4. Universal 2x UI text
+
+- Every `ctx.font = ...` call across `src/` was grepped and confirmed
+  updated: `game.ts` (game-over/victory screen: 40->80px title, 18->36px
+  stat lines, 16->32px restart prompt), `ui/hud.ts` (all HUD text, plus
+  the inventory-slot box bumped 44->52px so the doubled slot-number label
+  still fits), `ui/shopPanel.ts` (panel grown 560x520 -> 860x760, row
+  height 40->62, tab height 36->56, tab width introduced at 260 since tabs
+  are now drawn from a shared `TAB_W` constant instead of two independent
+  hardcoded widths), `ui/debugOverlay.ts` (both the F1 overlay and F7
+  spawn readout panels doubled in both font size and panel/line-spacing
+  dimensions), `ui/minimap.ts` (boss warning banner), `ui/startScreen.ts`
+  (title, difficulty buttons widened 148->210px to fit "Very Hard" at the
+  doubled font, start button, help text). `render/renderer.ts` and
+  `render/rendererDetailed.ts` contain no `ctx.font` calls at all (no
+  floating in-world text/labels exist in this game — health bars are drawn
+  as plain filled rects, not text), so nothing there needed touching.
+- Verified via Playwright screenshots at 1400x900 that none of the above
+  overlap or clip at the new sizes: start screen (title/subtitle/buttons/
+  help text all clear of each other), HUD in a live run (coins/wave/timer/
+  HP+core bars/inventory slots/summon bar all readable with clear
+  padding), and the shop panel (title/coins/tabs/all 7 weapon rows/hint
+  text, or the Base tab) — screenshots on file in this session's scratch
+  space. One pre-existing, out-of-scope overlap was noted but not touched:
+  the F1 debug overlay panel visually sits on top of the top-left Coins/
+  Wave/Enemies-alive HUD text when both are visible simultaneously — this
+  overlap predates this round (the old 230x164 debug panel already
+  covered the same HUD text region at the old sizes) and debug overlay is
+  a developer-only toggle, not part of the "no overlapping UI text" ask
+  for normal play.
+
+### Bugfix found and fixed this round (pre-existing, unrelated to the 4 goals)
+
+`world/flowfield.ts`'s `MinHeap.pop()` stored heap entries as a flattened
+`[dist, index, dist, index, ...]` array and used two `Array.pop()` calls to
+retrieve the last pair when reheapifying — but assigned the two popped
+values (`index` pops off the end first, `dist` second) to variables named
+the opposite way around. This silently swapped `dist`<->`index` on every
+pop, corrupting the heap's ordering without ever throwing, so
+`recompute()` "worked" but degenerated from a proper O(V log V) Dijkstra
+into pushing enormous numbers of redundant heap entries — turning what
+should be a <50ms one-time cost per flow-field recompute into multiple
+minutes, badly stalling gameplay every time the field needs to
+recalculate. Confirmed pre-existing and unrelated to this round's map
+changes (reproduces bit-for-bit against the pre-round-7 committed
+`flowfield.ts`). Fixed by swapping the two `pop()` assignments to match
+the actual push order.
+
+### Verification summary for this round
+
+- `npx tsc` (via `npm run build`) passes clean; production build succeeds.
+- Playwright smoke pass against `npm run dev` (real Chromium), zero
+  console errors/pageerrors across every scenario below:
+  - Start screen screenshot: title/difficulty buttons/START button/help
+    text all render without overlap at the 2x sizes.
+  - Selected Very Hard and Hell via keyboard (4/5), started, and
+    screenshotted the F1+F7 debug overlays live in both F10 render
+    styles — panels, line spacing and the rolling spawn-rate graph all
+    render at the new 2x sizes without clipping.
+  - Zoomed out via mouse wheel on Normal difficulty and screenshotted the
+    road grid in both F10 styles side by side: uniform horizontal/
+    vertical concrete strips with dashed centerlines, green block
+    interiors scattered with trees/rocks, base wall segments with gaps
+    still bottom-middle — pixel-identical grid between the two render
+    styles, confirming goal 3 needed no `rendererDetailed.ts` changes.
+    Enemies (F6-spawned) visible flowing toward the wall gaps normally on
+    the new map.
+  - Bigger player/archer confirmed visually in the same screenshots — the
+    player hexagon reads noticeably larger relative to the grid/obstacles
+    than the pre-round-7 radius would have.
+  - Walked to the shop marker and opened the shop panel (E): screenshot
+    confirms the grown panel (860x760) cleanly fits the title, coin
+    counter, both tabs, and all 7 weapon rows at the doubled fonts with no
+    row-to-row or column overlap.
+  - Confirmed by code reading (`config.ts::getWaveForDifficulty`,
+    `game.ts::spawnEnemyFromRequest`) rather than a live per-difficulty
+    wave-composition readout, since the F7 debug panel shows only the
+    combined grunt+archer spawn budget total, not the split — the total
+    (`grunts+archers`) is unchanged by `getWaveForDifficulty`, so it
+    reads identically for Normal and Hell wave 1 even though the actual
+    kind split differs, which is expected and by design (composition
+    swap, not a headcount change).
+- **Not verifiable in this environment / needs a human**: whether the
+  earlier archer introduction actually feels appropriately harder rather
+  than just different on Hard/Very Hard/Hell over a real playthrough;
+  whether the new road-grid map's sightlines/block layout feel good for
+  actual play (vs. the old maze lanes) especially for archer-kiting near
+  block corners; whether the bigger player/archer hitboxes change melee
+  balance in ways that need a numeric follow-up.

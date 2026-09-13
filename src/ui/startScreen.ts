@@ -10,9 +10,12 @@ import { DIFFICULTY, type DifficultyId } from '../config.ts';
 const ORDER: DifficultyId[] = ['easy', 'normal', 'hard', 'veryHard', 'hell'];
 export const DIFFICULTY_ORDER = ORDER;
 
-const BUTTON_W = 148;
-const BUTTON_H = 60;
-const GAP = 14;
+// Round 7: enlarged alongside the 2x UI text (see DECISIONS.md) — buttons
+// widened so the doubled difficulty labels (bold 15px -> bold 30px, e.g.
+// "Very Hard") still fit comfortably inside.
+const BUTTON_W = 210;
+const BUTTON_H = 84;
+const GAP = 18;
 
 interface Rect {
   x: number;
@@ -29,9 +32,9 @@ function difficultyButtons(screenW: number, screenH: number): { id: DifficultyId
 }
 
 function startButton(screenW: number, screenH: number): Rect {
-  const w = 220;
-  const h = 60;
-  return { x: screenW / 2 - w / 2, y: screenH / 2 + 100, w, h };
+  const w = 300;
+  const h = 84;
+  return { x: screenW / 2 - w / 2, y: screenH / 2 + 130, w, h };
 }
 
 function inRect(mx: number, my: number, r: Rect): boolean {
@@ -55,12 +58,12 @@ export function drawStartScreen(ctx: CanvasRenderingContext2D, screenW: number, 
 
   ctx.textAlign = 'center';
   ctx.fillStyle = '#fff';
-  ctx.font = 'bold 44px sans-serif';
-  ctx.fillText('WAVE DEFENSE', screenW / 2, screenH / 2 - 160);
+  ctx.font = 'bold 88px sans-serif';
+  ctx.fillText('WAVE DEFENSE', screenW / 2, screenH / 2 - 220);
 
-  ctx.font = '17px sans-serif';
+  ctx.font = '34px sans-serif';
   ctx.fillStyle = '#cfd8e3';
-  ctx.fillText('Select difficulty', screenW / 2, screenH / 2 - 105);
+  ctx.fillText('Select difficulty', screenW / 2, screenH / 2 - 140);
 
   for (const b of difficultyButtons(screenW, screenH)) {
     const def = DIFFICULTY[b.id];
@@ -83,8 +86,8 @@ export function drawStartScreen(ctx: CanvasRenderingContext2D, screenW: number, 
     }
 
     ctx.fillStyle = def.textColor;
-    ctx.font = 'bold 15px sans-serif';
-    ctx.fillText(def.label, x + w / 2, y + h / 2 + 5);
+    ctx.font = 'bold 30px sans-serif';
+    ctx.fillText(def.label, x + w / 2, y + h / 2 + 10);
   }
 
   const sb = startButton(screenW, screenH);
@@ -94,12 +97,12 @@ export function drawStartScreen(ctx: CanvasRenderingContext2D, screenW: number, 
   ctx.lineWidth = 2;
   ctx.strokeRect(sb.x, sb.y, sb.w, sb.h);
   ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 22px sans-serif';
-  ctx.fillText('START', sb.x + sb.w / 2, sb.y + sb.h / 2 + 8);
+  ctx.font = 'bold 44px sans-serif';
+  ctx.fillText('START', sb.x + sb.w / 2, sb.y + sb.h / 2 + 16);
 
-  ctx.font = '13px sans-serif';
+  ctx.font = '26px sans-serif';
   ctx.fillStyle = '#9fb0c0';
-  ctx.fillText('Click a difficulty, or use number keys 1-5 / arrow keys — Enter or click START to begin', screenW / 2, sb.y + sb.h + 32);
+  ctx.fillText('Click a difficulty, or use number keys 1-5 / arrow keys — Enter or click START to begin', screenW / 2, sb.y + sb.h + 50);
 
   ctx.restore();
 }
