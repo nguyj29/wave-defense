@@ -156,9 +156,19 @@ export interface WeaponDef {
   // weapon so the rifle kicks noticeably more than the pistol.
   recoilCamera: number;
   recoilBarrel: number;
+  // Phase 2 (full-game): weapon "kind" dispatches how updatePlayerWeapon
+  // resolves an attack — 'gun' (default, unset) fires a normal projectile
+  // exactly like the prototype's rifle/pistol; 'melee' sweeps a cone in
+  // front of the player (macer); 'thrown' lobs an arcing AoE reusing the
+  // same Game.fireballs/burning-ground pipeline built for the fire mage in
+  // Phase 1 (bomber class's grenade) — see combat/playerWeapons.ts.
+  kind?: 'gun' | 'melee' | 'thrown';
+  meleeArcDeg?: number; // 'melee' only: full cone width
+  blastRadius?: number; // 'thrown' only: AoE impact radius
+  enemyFalloff?: number; // 'thrown' only: fraction of damage dealt to the thrower's OWN faction caught in the blast (the thrower itself is always excluded — see DECISIONS.md)
 }
 
-export const WEAPONS: Record<'rifle' | 'pistol', WeaponDef> = {
+export const WEAPONS: Record<'rifle' | 'pistol' | 'mace' | 'grenade', WeaponDef> = {
   rifle: {
     key: '1',
     name: 'Assault Rifle',
@@ -202,6 +212,51 @@ export const WEAPONS: Record<'rifle' | 'pistol', WeaponDef> = {
     recoilCamera: 3,
     recoilBarrel: 2.5,
   },
+  // Macer's melee weapon (Phase 2): a short-range cone sweep in front of the
+  // player, high per-hit damage, no ammo. See combat/playerWeapons.ts.
+  mace: {
+    key: '1',
+    name: 'Mace',
+    damageBase: 26,
+    damagePerLevel: 5,
+    fireRateBase: 1.6, // swings/s
+    fireRatePerLevel: 0,
+    range: 90, // melee cone radius from the player
+    spreadDeg: 0,
+    bulletSpeed: 0, // unused for melee
+    infiniteAmmo: true,
+    recoilCamera: 2,
+    recoilBarrel: 6, // a bigger barrel-pullback-style "windup" read even though it's not a real barrel
+    kind: 'melee',
+    meleeArcDeg: 110,
+  },
+  // Bomber class's thrown weapon (Phase 2): lobs to the mouse position (or
+  // this weapon's max range along the aim line, whichever is closer),
+  // exploding in `blastRadius` on arrival and leaving no burning ground
+  // (reuses the same Game.fireballs pipeline built for the Phase 1 fire
+  // mage, with burnDuration 0). See combat/playerWeapons.ts.
+  grenade: {
+    key: '1',
+    name: 'Grenade Launcher',
+    damageBase: 45,
+    damagePerLevel: 8,
+    fireRateBase: 0.9, // one throw per ~1.1s
+    fireRatePerLevel: 0,
+    range: 550,
+    spreadDeg: 0,
+    bulletSpeed: 420,
+    infiniteAmmo: true,
+    recoilCamera: 5,
+    recoilBarrel: 4,
+    kind: 'thrown',
+    blastRadius: 110,
+    // Deliberately gentler than the enemy bomber's 35% (a judgment call —
+    // see DECISIONS.md): a player's own grenade splashing allies is
+    // annoying but shouldn't be as punishing as an enemy's intentional
+    // chain-detonation mechanic. The thrower itself is always excluded
+    // entirely, regardless of this value.
+    enemyFalloff: 0.2,
+  },
 };
 
 // Shared recoil decay: after a shot kicks the camera/barrel to full strength,
@@ -209,6 +264,93 @@ export const WEAPONS: Record<'rifle' | 'pistol', WeaponDef> = {
 // every time — deterministic "game feel" polish, not screen-wide jitter).
 export const RECOIL = {
   decayPerSecond: 16,
+};
+
+// ---------------------------------------------------------------------------
+// Player classes (Phase 2, full-game) — chosen on the start screen alongside
+// difficulty, persists across resets exactly like `difficulty` does. Each
+// class binds a distinct slot-1 weapon (see game.ts::classSlot1Weapon) and
+// applies a stat multiplier plus one passive effect, implemented at the
+// specific call sites named below rather than as a generic "modifier
+// system" (four classes with four different, very specific passives didn't
+// seem to earn a whole rules-engine abstraction yet — see DECISIONS.md).
+// ---------------------------------------------------------------------------
+export type PlayerClassId = 'assault' | 'bomber' | 'macer' | 'summoner';
+
+export interface PlayerClassDef {
+  id: PlayerClassId;
+  label: string;
+  color: string;
+  textColor: string;
+  hpMult: number;
+  speedMult: number;
+  description: string;
+  passiveDescription: string;
+  // Passive numeric hooks — applied at their specific call sites (see the
+  // comment above): assault's reload speed (combat/playerWeapons.ts),
+  // macer's on-hit self-heal (combat/playerWeapons.ts), summoner's
+  // summon-count/cap/cooldown multipliers (game.ts::trySummon). Bomber's
+  // passive ("immune to own grenade blast") needs no numeric hook — the
+  // thrower is unconditionally excluded from its own grenade's blast
+  // regardless of class, see WEAPONS.grenade's doc comment.
+  reloadTimeMult: number;
+  summonStatMult: number;
+  meleeSelfHealPerHit: number;
+}
+
+export const PLAYER_CLASSES: Record<PlayerClassId, PlayerClassDef> = {
+  assault: {
+    id: 'assault',
+    label: 'Assault',
+    color: '#5ec9ff',
+    textColor: '#031017',
+    hpMult: 1.0,
+    speedMult: 1.0,
+    description: 'Rifle + pistol. The balanced, default kit.',
+    passiveDescription: 'Reloads 20% faster.',
+    reloadTimeMult: 0.8,
+    summonStatMult: 1.0,
+    meleeSelfHealPerHit: 0,
+  },
+  bomber: {
+    id: 'bomber',
+    label: 'Bomber',
+    color: '#ff9d3d',
+    textColor: '#1a0d00',
+    hpMult: 0.9,
+    speedMult: 0.95,
+    description: 'Lobs grenades that explode in an AoE.',
+    passiveDescription: 'Immune to its own grenade blast.',
+    reloadTimeMult: 1.0,
+    summonStatMult: 1.0,
+    meleeSelfHealPerHit: 0,
+  },
+  macer: {
+    id: 'macer',
+    label: 'Macer',
+    color: '#c9a3ff',
+    textColor: '#160a26',
+    hpMult: 1.3,
+    speedMult: 0.9,
+    description: 'A heavy melee cone sweep, high HP and damage up close.',
+    passiveDescription: 'Heals a little HP on every mace hit.',
+    reloadTimeMult: 1.0,
+    summonStatMult: 1.0,
+    meleeSelfHealPerHit: 2,
+  },
+  summoner: {
+    id: 'summoner',
+    label: 'Summoner',
+    color: '#7CFC00',
+    textColor: '#0a1a00',
+    hpMult: 0.85,
+    speedMult: 1.0,
+    description: 'Weaker personally, commands more and stronger allies.',
+    passiveDescription: '+50% summon count/cap, faster summon recharge.',
+    reloadTimeMult: 1.0,
+    summonStatMult: 1.5,
+    meleeSelfHealPerHit: 0,
+  },
 };
 
 export const SUMMON = {

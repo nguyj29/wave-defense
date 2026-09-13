@@ -24,6 +24,12 @@ export interface FireballSpawn {
   burnRadius: number;
   enemyFalloff: number;
   ownerFaction: Faction;
+  // Phase 2: the throwing entity's own id, if any, so it can be excluded
+  // from its own blast (bomber-class player passive: "immune to its own
+  // grenade blast" — see combat/playerWeapons.ts::fireThrown). Enemy fire
+  // mages leave this unset; nothing excludes them from their own fireball's
+  // blast today since it lobs to a target point away from the caster.
+  ownerId?: number;
 }
 
 // Shared read/mutate context handed to every per-entity behavior update.

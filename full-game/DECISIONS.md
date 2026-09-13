@@ -218,3 +218,91 @@ renderer variants, the bomber-fuse ring/flash visual, the heal-tether line
 visual, and the F6 debug-cycle key itself (its underlying function,
 `spawnEnemyFromRequest`, was exercised directly and confirmed correct; the
 keyboard-cycling UI path around it was not separately driven).
+
+## Phase 2 — Player classes
+
+Four classes (`config.ts::PLAYER_CLASSES`), chosen on the start screen
+alongside difficulty (new class row + QWER keys, `ui/startScreen.ts`),
+persisting across resets exactly like difficulty already did.
+
+- **Assault** — the prototype's original kit unchanged: rifle (slot 1) +
+  pistol (slot 2) + summon (slot 3), 1.0 HP/speed. Passive: reloads 20%
+  faster (`reloadTimeMult`, applied in `combat/playerWeapons.ts::startReload`).
+  This is deliberately the "no surprises" baseline class.
+- **Bomber** — slot 1 is a new Grenade Launcher weapon
+  (`WEAPONS.grenade`, `kind: 'thrown'`) that lobs to the mouse position (or
+  its max range along that line, whichever is closer) and explodes in an
+  AoE. It reuses the *exact same* `Game.fireballs`/`applyAreaDamage`
+  pipeline built for Phase 1's fire mage — a thrown AoE with a fixed target
+  point is the same shape regardless of who's throwing it — with
+  `burnDuration: 0` so no ground-fire zone is left behind (a plain grenade,
+  not a fire mage's spell). Passive ("immune to its own blast"): the
+  thrower's own id is now threaded through as `FireballSpawn.ownerId` and
+  passed to `applyAreaDamage`'s `excludeId`, so a player is always excluded
+  from their own grenade's blast — implemented as a general capability of
+  the shared pipeline (any owner id can be excluded) rather than a
+  bomber-class-specific branch, since it's the more obviously-correct
+  default for anyone lobbing their own explosive regardless of class.
+  90% HP / 95% speed — a glass-cannon-ish AoE class.
+- **Macer** — slot 1 is a new Mace weapon (`WEAPONS.mace`, `kind: 'melee'`):
+  a 110°, 90-unit-range cone swept in front of the player on every attack,
+  hitting every enemy inside it (not a single-target hitscan), high per-hit
+  damage, no ammo. Passive: heals a flat 2 HP on every swing that connects
+  with at least one enemy. 130% HP / 90% speed — a tanky brawler.
+- **Summoner** — slot 1 is just the pistol (weak personal offense
+  deliberately), slot 2 is disabled (there's nothing else to bind there),
+  slot 3 (summon) is its whole identity. Passive: +50% summon count AND cap,
+  and a faster recharge (cooldown divided by the same 1.5x multiplier) —
+  applied as one multiplier (`summonStatMult`) composed with the existing
+  shop-derived numbers in `game.ts::trySummon`, keeping `economy/shop.ts`
+  itself entirely class-agnostic (a deliberate boundary: shop math doesn't
+  need to know classes exist, class passives compose on top at the one call
+  site that actually spends them). 85% HP, normal speed.
+
+### Judgment calls
+
+- **Weapon system generalization**: `combat/playerWeapons.ts`'s `WeaponId`
+  grew from `{rifle, pistol}` to include `mace`/`grenade`, dispatched by a
+  new `WeaponDef.kind` (`'gun' | 'melee' | 'thrown'`, unset = gun). Rather
+  than writing three separate "fire" functions with no shared structure, the
+  original rifle/pistol projectile path became `fireGun`, and `fireMelee`/
+  `fireThrown` are new siblings — `updatePlayerWeapon` picks one after the
+  shared cooldown/reload/recoil bookkeeping at the top, so all four weapons
+  still go through one state machine and one recoil-decay curve.
+- **No per-class shop upgrades yet**: mace/grenade have no shop entries
+  (only rifle/pistol/summon do, per the prototype). This is intentionally
+  deferred — the brief's Phase 4 explicitly covers "per-type upgrades" in
+  the rebuilt shop, and adding half of that system now (some upgrade paths
+  for 2 of 4 weapons) would need redoing anyway once Phase 4's tab
+  structure exists.
+- **Class selection is a start-screen-only choice** (no mid-run
+  respec/class-switch), matching how difficulty already works — consistent
+  UX, and avoids having to define what happens to already-summoned allies,
+  ammo state, etc. if a class changed mid-run.
+- **Player-grenade friendly-fire fraction** (`WEAPONS.grenade.enemyFalloff
+  = 0.2`) is deliberately gentler than the enemy bomber's 0.35 — a
+  judgment call: a player's own grenade splashing their allies is meant to
+  be a minor "watch your throws" tax, not a punishing chain-detonation
+  mechanic like the enemy bomber's is designed to be. Worth revisiting
+  once there's more multiplayer-adjacent-feeling ally density to judge it
+  against.
+- **Macer's `meleeArcDeg`/range (110°/90 units)** and **grenade's
+  blast/range (110/550)** are first-pass numbers, not deeply playtested —
+  flagged as rebalancing candidates once Phase 3/4 make runs long enough to
+  judge class balance against a real difficulty curve.
+
+### Verified live vs. code-review only
+
+Live-verified via headless-Chromium Playwright driving the real `Game`
+instance: class selection (keyboard) correctly binds the right slot-1
+weapon and applies the right HP multiplier for all 4 classes; bomber's
+grenade throw enqueues a fireball; macer's mace sweep hits an enemy in its
+cone for exactly its configured damage and heals the player for exactly its
+configured self-heal amount (plus the pre-existing, unrelated passive HP
+regen tick — confirmed by exact-number matching); summoner's summon count/
+cap/cooldown all reflect the 1.5x multiplier exactly. Code-review only: the
+new start-screen class-row visuals/layout, and full weapon-switching via
+the actual Digit1/Digit2 keys while playing (the underlying
+`classSlot1Weapon`/`classSlot2Weapon`/`switchWeapon` calls were exercised
+directly and confirmed correct; the keyboard path around them during live
+gameplay was not separately driven end-to-end).

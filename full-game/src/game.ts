@@ -12,6 +12,7 @@ import {
   getWaveForDifficulty,
   pickSpawnGeneration,
   PLAYER,
+  PLAYER_CLASSES,
   SHOP,
   SUMMON,
   WAVES,
@@ -19,6 +20,7 @@ import {
   WORLD,
   type DifficultyId,
   type EnemyDef,
+  type PlayerClassId,
 } from './config.ts';
 import { setGodMode, updateRegen } from './combat/damage.ts';
 import { applyAreaDamage, applyAreaDotDamage } from './combat/areaDamage.ts';
@@ -28,6 +30,7 @@ import {
   switchWeapon,
   updatePlayerWeapon,
   type PlayerWeaponState,
+  type WeaponId,
 } from './combat/playerWeapons.ts';
 import { updateProjectiles } from './combat/projectiles.ts';
 import { tickCooldowns } from './combat/weapons.ts';
@@ -178,6 +181,9 @@ export class Game {
   // screen rather than instantly replaying, which lets the player change it
   // there too if they want).
   difficulty: DifficultyId = 'normal';
+  // Phase 2 (full-game): player class, chosen on the start screen alongside
+  // difficulty, persists across resets the same way.
+  playerClass: PlayerClassId = 'assault';
 
   debug: DebugState = {
     overlay: false,
@@ -250,7 +256,14 @@ export class Game {
     this.summonCooldownRemaining = 0;
     this.activeSlot = 1;
 
-    this.player = createPlayer(CORE.x + 60, CORE.y - 60, PLAYER.maxHp);
+    // Phase 2 (full-game): class stat multipliers applied at spawn time —
+    // see config.ts::PLAYER_CLASSES. speedMult is read live off PLAYER.speed
+    // every tick in simulate() (see the movement block below) rather than
+    // baked into a stored value, so it can never drift out of sync with a
+    // shop upgrade to base speed (there isn't one today, but this is the
+    // same "read from config live" pattern the rest of the file follows).
+    const classDef = PLAYER_CLASSES[this.playerClass];
+    this.player = createPlayer(CORE.x + 60, CORE.y - 60, Math.round(PLAYER.maxHp * classDef.hpMult));
     this.entities.push(this.player);
 
     this.core = createCore(CORE.x, CORE.y, CORE.radius, coreMaxHp(this.shopLevels));
@@ -258,7 +271,7 @@ export class Game {
 
     this.spawners = SPAWNER_POSITIONS.map((pos, i) => ({ id: i, x: pos.x, y: pos.y, timer: 0 }));
 
-    this.playerWeaponState = createPlayerWeaponState(this.shopLevels);
+    this.playerWeaponState = createPlayerWeaponState(this.shopLevels, this.classSlot1Weapon());
 
     this.waveManager = new WaveManager();
     this.spawnDirector = new SpawnDirector(getWaveForDifficulty(this.waveManager.currentWave, this.difficulty), this.effectiveSpawnRateMult());
@@ -338,9 +351,18 @@ export class Game {
     if (input.wasPressed('ArrowLeft')) this.difficulty = order[(idx - 1 + order.length) % order.length];
     if (input.wasPressed('ArrowRight')) this.difficulty = order[(idx + 1) % order.length];
 
+    // Phase 2 (full-game): class selection, QWER (mnemonic: Q=assault first
+    // letter isn't literal, just a convenient unused row of 4 keys next to
+    // the 1-5 difficulty row).
+    if (input.wasPressed('KeyQ')) this.playerClass = 'assault';
+    if (input.wasPressed('KeyW')) this.playerClass = 'bomber';
+    if (input.wasPressed('KeyE')) this.playerClass = 'macer';
+    if (input.wasPressed('KeyR')) this.playerClass = 'summoner';
+
     if (input.wasMousePressed()) {
       const hit = hitTestStartScreen(input.mouseX, input.mouseY, this.camera.screenWidth, this.camera.screenHeight);
       if (hit?.type === 'difficulty') this.difficulty = hit.id;
+      else if (hit?.type === 'class') this.playerClass = hit.id;
       else if (hit?.type === 'start') this.reset();
     }
 
@@ -384,26 +406,33 @@ export class Game {
     const input = this.input;
 
     // --- Player control -------------------------------------------------
+    const classDef = PLAYER_CLASSES[this.playerClass];
+    const playerSpeed = PLAYER.speed * classDef.speedMult;
     const axis = input.moveAxis();
-    const targetVx = axis.x * PLAYER.speed;
-    const targetVy = axis.y * PLAYER.speed;
-    const accel = PLAYER.speed / PLAYER.accelTime;
+    const targetVx = axis.x * playerSpeed;
+    const targetVy = axis.y * playerSpeed;
+    const accel = playerSpeed / PLAYER.accelTime;
     this.player.vx = approach(this.player.vx, targetVx, accel * dt);
     this.player.vy = approach(this.player.vy, targetVy, accel * dt);
 
     const mouseWorld = this.camera.screenToWorld(input.mouseX, input.mouseY);
     this.player.angle = Math.atan2(mouseWorld.y - this.player.y, mouseWorld.x - this.player.x);
 
+    // Phase 2: slot 1 is always the class's signature weapon (rifle/
+    // grenade/mace/pistol — see classSlot1Weapon()); slot 2 is the shared
+    // pistol backup for every class except summoner, which has no slot 2
+    // (pressing Digit2 as summoner is a harmless no-op — switchWeapon is
+    // already idempotent when the target equals the current weapon).
     if (input.wasPressed('Digit1')) {
       this.activeSlot = 1;
-      switchWeapon(this.playerWeaponState, 'rifle');
+      switchWeapon(this.playerWeaponState, this.classSlot1Weapon());
     }
-    if (input.wasPressed('Digit2')) {
+    if (input.wasPressed('Digit2') && this.classSlot2Weapon()) {
       this.activeSlot = 2;
-      switchWeapon(this.playerWeaponState, 'pistol');
+      switchWeapon(this.playerWeaponState, this.classSlot2Weapon()!);
     }
     if (input.wasPressed('Digit3')) this.activeSlot = 3;
-    if (input.wasPressed('KeyR')) startReload(this.playerWeaponState, this.shopLevels);
+    if (input.wasPressed('KeyR')) startReload(this.playerWeaponState, this.shopLevels, classDef.reloadTimeMult);
     if (input.wasPressed('KeyM')) toggleMusicMute();
 
     this.player.iframeTimer = Math.max(0, (this.player.iframeTimer ?? 0) - dt);
@@ -442,7 +471,18 @@ export class Game {
     if (this.activeSlot === 3) {
       if (input.wasMousePressed()) this.trySummon(mouseWorld.x, mouseWorld.y);
     } else {
-      updatePlayerWeapon(this.playerWeaponState, dt, this.shopLevels, this.player, this.player.angle, input.mouseDown, ctx);
+      updatePlayerWeapon(
+        this.playerWeaponState,
+        dt,
+        this.shopLevels,
+        this.player,
+        this.player.angle,
+        input.mouseDown,
+        ctx,
+        classDef,
+        mouseWorld.x,
+        mouseWorld.y,
+      );
     }
 
     // Regen (player out-of-combat, allies always-on) for every entity that has it.
@@ -467,7 +507,7 @@ export class Game {
       const d = Math.hypot(dx, dy);
       const step = fb.speed * dt;
       if (d <= step) {
-        applyAreaDamage(this.entities, fb.targetX, fb.targetY, fb.impactRadius, fb.damage, fb.enemyFalloff, fb.ownerFaction);
+        applyAreaDamage(this.entities, fb.targetX, fb.targetY, fb.impactRadius, fb.damage, fb.enemyFalloff, fb.ownerFaction, fb.ownerId);
         this.groundEffects.push({
           x: fb.targetX,
           y: fb.targetY,
@@ -652,10 +692,15 @@ export class Game {
 
   private trySummon(x: number, y: number): void {
     if (this.summonCooldownRemaining > 0) return;
+    // Phase 2: summoner's passive (+50% count/cap, faster recharge) is a
+    // flat multiplier applied here, on top of the shop-derived numbers —
+    // economy/shop.ts stays entirely class-agnostic, and this is the one
+    // place that composes "shop level" with "class passive" for summons.
+    const classMult = PLAYER_CLASSES[this.playerClass].summonStatMult;
     const aliveSummoned = this.entities.filter((e) => e.kind === 'ally' && e.summonedByPlayer && !e.dead).length;
-    const maxAlive = summonMaxAlive(this.shopLevels);
+    const maxAlive = Math.round(summonMaxAlive(this.shopLevels) * classMult);
     if (aliveSummoned >= maxAlive) return;
-    const count = Math.min(summonCount(this.shopLevels), maxAlive - aliveSummoned);
+    const count = Math.min(Math.round(summonCount(this.shopLevels) * classMult), maxAlive - aliveSummoned);
     for (let i = 0; i < count; i++) {
       const angle = (i / count) * Math.PI * 2;
       const scatter = SUMMON.summonRadiusScatter;
@@ -669,8 +714,28 @@ export class Game {
       });
       this.entities.push(ally);
     }
-    this.summonCooldownRemaining = summonCooldownSeconds(this.shopLevels);
+    this.summonCooldownRemaining = summonCooldownSeconds(this.shopLevels) / classMult;
     playSfx('allySummon');
+  }
+
+  // Phase 2: which WeaponId occupies slot 1/2 for the current class. Kept
+  // as tiny pure functions (rather than a field snapshotted at reset — a
+  // player's class doesn't change mid-run today, but this avoids yet
+  // another piece of state to keep in sync if that ever changes).
+  private classSlot1Weapon(): WeaponId {
+    switch (this.playerClass) {
+      case 'bomber':
+        return 'grenade';
+      case 'macer':
+        return 'mace';
+      case 'summoner':
+        return 'pistol';
+      default:
+        return 'rifle';
+    }
+  }
+  private classSlot2Weapon(): WeaponId | null {
+    return this.playerClass === 'summoner' ? null : 'pistol';
   }
 
   private spawnEnemyFromRequest(kind: SpawnKind, x: number, y: number): void {
@@ -888,15 +953,19 @@ export class Game {
       playerMaxHp: this.player.health!.maxHp,
       coreHp: this.core.health!.hp,
       coreMaxHp: this.core.health!.maxHp,
-      weaponLabel: this.activeSlot === 3 ? 'Summon Wand' : this.activeSlot === 1 ? 'Assault Rifle' : 'Pistol',
+      // Phase 2: label/ammo now come from the actual current weapon
+      // (WEAPONS[...].name) rather than assuming slot 1 is always the
+      // rifle — a bomber/macer's slot 1 is grenade/mace, and only the
+      // rifle actually has a magazine/reload cycle.
+      weaponLabel: this.activeSlot === 3 ? 'Summon Wand' : WEAPONS[this.playerWeaponState.current].name,
       ammoText:
-        this.activeSlot === 1
-          ? this.playerWeaponState.reloading
-            ? 'Reloading...'
-            : `${this.playerWeaponState.rifleAmmo}/${rifleMagazine(this.shopLevels)}`
-          : this.activeSlot === 2
-            ? 'unlimited'
-            : 'Left-click to summon',
+        this.activeSlot === 3
+          ? 'Left-click to summon'
+          : this.playerWeaponState.current === 'rifle'
+            ? this.playerWeaponState.reloading
+              ? 'Reloading...'
+              : `${this.playerWeaponState.rifleAmmo}/${rifleMagazine(this.shopLevels)}`
+            : 'unlimited',
       summonCooldownRemaining: this.summonCooldownRemaining,
       summonCooldownTotal: summonCooldownSeconds(this.shopLevels),
       summonMaxAlive: summonMaxAlive(this.shopLevels),
@@ -988,7 +1057,7 @@ export class Game {
     if (this.endlessBannerTimer > 0) this.drawEndlessBanner();
 
     if (this.phase === 'start') {
-      drawStartScreen(ctx, w, h, this.difficulty);
+      drawStartScreen(ctx, w, h, this.difficulty, this.playerClass);
     }
 
     this.lastRenderMs = performance.now() - t0;
