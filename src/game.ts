@@ -1,5 +1,21 @@
 import { Camera } from './camera.ts';
-import { ALLY, COINS, CORE, DEBUG, GEM, PLAYER, SHOP, SPAWN_DIRECTOR, SUMMON, WEAPONS, WORLD } from './config.ts';
+import {
+  ALLY,
+  COINS,
+  CORE,
+  DEBUG,
+  DIFFICULTY,
+  ENEMIES,
+  GEM,
+  PLAYER,
+  SHOP,
+  SPAWN_DIRECTOR,
+  SUMMON,
+  WEAPONS,
+  WORLD,
+  type DifficultyId,
+  type EnemyDef,
+} from './config.ts';
 import { setGodMode, updateRegen } from './combat/damage.ts';
 import {
   createPlayerWeaponState,
@@ -42,6 +58,7 @@ import { drawDebugOverlay, drawSpawnReadout, type DebugData, type SpawnReadoutDa
 import { drawHud, type HudData } from './ui/hud.ts';
 import { drawBossWarningBanner, drawMinimap } from './ui/minimap.ts';
 import { ShopPanel } from './ui/shopPanel.ts';
+import { drawStartScreen, hitTestStartScreen } from './ui/startScreen.ts';
 import {
   drawCollisionRadii,
   drawEntity,
@@ -114,6 +131,12 @@ export class Game {
   phase: GamePhase = 'start';
   gameOverInfo: { waveReached: number; coins: number; victory: boolean } | null = null;
   shopPanel = new ShopPanel();
+  // Round 6: chosen on the start screen, persists across reset() (so a
+  // restart-after-death shows the same selection rather than reverting to
+  // Normal — see DECISIONS.md for why restart returns to the selector
+  // screen rather than instantly replaying, which lets the player change it
+  // there too if they want).
+  difficulty: DifficultyId = 'normal';
 
   debug: DebugState = {
     overlay: false,
@@ -145,6 +168,9 @@ export class Game {
     this.resize();
     window.addEventListener('resize', () => this.resize());
     this.reset();
+    // reset() leaves phase at 'playing'; the very first load should show the
+    // difficulty-select start screen instead (see handleStartScreenInput()).
+    this.phase = 'start';
   }
 
   private resize(): void {
@@ -188,7 +214,7 @@ export class Game {
     this.playerWeaponState = createPlayerWeaponState(this.shopLevels);
 
     this.waveManager = new WaveManager();
-    this.spawnDirector = new SpawnDirector(this.waveManager.currentWave);
+    this.spawnDirector = new SpawnDirector(this.waveManager.currentWave, DIFFICULTY[this.difficulty].spawnRateMult);
     this.rateHistory = [];
 
     this.camera.snapTo(this.player.x, this.player.y);
@@ -210,6 +236,13 @@ export class Game {
     const t0 = performance.now();
     this.handleDebugKeys();
 
+    if (this.phase === 'start') {
+      this.handleStartScreenInput();
+      this.input.endTick();
+      this.lastUpdateMs = performance.now() - t0;
+      return;
+    }
+
     if (this.phase === 'shop') {
       this.handleShopInput();
       this.input.endTick();
@@ -226,7 +259,10 @@ export class Game {
     }
 
     if ((this.phase === 'gameover' || this.phase === 'victory') && this.input.wasPressed('KeyR')) {
-      this.reset();
+      // Round 6: return to the difficulty selector rather than immediately
+      // replaying, so the player can change difficulty before their next
+      // run (their previous choice is still preselected — see `difficulty`).
+      this.phase = 'start';
     }
 
     this.input.endTick();
@@ -237,6 +273,30 @@ export class Game {
     const dx = this.player.x - SHOP.marker.x;
     const dy = this.player.y - SHOP.marker.y;
     return Math.hypot(dx, dy);
+  }
+
+  private static readonly DIFFICULTY_ORDER: DifficultyId[] = ['easy', 'normal', 'hard', 'veryHard', 'hell'];
+
+  private handleStartScreenInput(): void {
+    const input = this.input;
+    const order = Game.DIFFICULTY_ORDER;
+    const idx = order.indexOf(this.difficulty);
+
+    if (input.wasPressed('Digit1')) this.difficulty = 'easy';
+    if (input.wasPressed('Digit2')) this.difficulty = 'normal';
+    if (input.wasPressed('Digit3')) this.difficulty = 'hard';
+    if (input.wasPressed('Digit4')) this.difficulty = 'veryHard';
+    if (input.wasPressed('Digit5')) this.difficulty = 'hell';
+    if (input.wasPressed('ArrowLeft')) this.difficulty = order[(idx - 1 + order.length) % order.length];
+    if (input.wasPressed('ArrowRight')) this.difficulty = order[(idx + 1) % order.length];
+
+    if (input.wasMousePressed()) {
+      const hit = hitTestStartScreen(input.mouseX, input.mouseY, this.camera.screenWidth, this.camera.screenHeight);
+      if (hit?.type === 'difficulty') this.difficulty = hit.id;
+      else if (hit?.type === 'start') this.reset();
+    }
+
+    if (input.wasPressed('Enter') || input.wasPressed('Space')) this.reset();
   }
 
   private handleShopInput(): void {
@@ -322,6 +382,8 @@ export class Game {
       obstacles: this.obstacles,
       pathfinder: this.pathfinder,
       spawnProjectile: (p) => this.entities.push(p),
+      playerX: this.player.x,
+      playerY: this.player.y,
     };
 
     tickCooldowns(this.entities, dt);
@@ -363,6 +425,7 @@ export class Game {
     );
 
     // Enemy deaths -> coins/gems + kill tracking (each entity processed exactly once).
+    const rewardMult = DIFFICULTY[this.difficulty].rewardMult;
     for (const e of this.entities) {
       if (e.kind === 'enemy' && e.dead && e.coinsMin !== undefined && !this.deathHandled.has(e.id)) {
         this.deathHandled.add(e.id);
@@ -372,17 +435,25 @@ export class Game {
           // Gems are a flat, rare-drop bonus — deliberately NOT scaled by
           // coinYield-style multipliers or the early-call bonus (see
           // DECISIONS.md): they're a separate mechanic from the base
-          // per-kill coin curve, not part of it.
-          this.entities.push(createCoin(e.x, e.y, GEM.coinValue, true));
+          // per-kill coin curve, not part of it. Difficulty's rewardMult
+          // still applies (round 6) — higher-difficulty runs pay out more
+          // across the board to compensate the added risk.
+          this.entities.push(createCoin(e.x, e.y, Math.round(GEM.coinValue * rewardMult), true));
         } else {
           const base = e.coinsMin + Math.random() * ((e.coinsMax ?? e.coinsMin) - e.coinsMin);
-          const value = Math.round(base * (1 + this.currentWaveCoinBonus));
+          const value = Math.round(base * (1 + this.currentWaveCoinBonus) * rewardMult);
           this.entities.push(createCoin(e.x, e.y, value));
         }
       }
     }
 
-    // Coin/gem magnet + pickup (same path for both — only the SFX differs).
+    // Coin/gem magnet + pickup. Round 6: coins now unconditionally home in
+    // on the player from the moment they drop, regardless of distance (no
+    // more magnetRadius gate) — allies killing enemies far from the player
+    // still send that coin flying across the map. Gems (c.isGem) are
+    // deliberately excluded from this and keep the old manual walk-up
+    // behavior (magnet only inside COINS.magnetRadius, same as pickupRadius
+    // today) exactly as before.
     for (const c of this.entities) {
       if (c.kind !== 'coin' || c.dead) continue;
       const dx = this.player.x - c.x;
@@ -392,7 +463,7 @@ export class Game {
         this.coins += c.coinValue ?? 0;
         c.dead = true;
         playSfx(c.isGem ? 'gemPickup' : 'coinPickup', 0.6);
-      } else if (d <= COINS.magnetRadius) {
+      } else if (!c.isGem || d <= COINS.magnetRadius) {
         const inv = 1 / (d || 1);
         c.x += dx * inv * COINS.magnetSpeed * dt;
         c.y += dy * inv * COINS.magnetSpeed * dt;
@@ -411,14 +482,19 @@ export class Game {
     }
 
     // --- Wave / spawn direction -----------------------------------------
+    // Round 6: the wave timer now only governs how long SpawnDirector may
+    // keep producing new spawn requests (it internally refuses once its own
+    // elapsed time passes the wave's durationSec — see spawnDirector.ts).
+    // The running -> intermission transition no longer happens purely
+    // because the timer hit 0; WaveManager.update() below is instead gated
+    // on aliveEnemies === 0 too, so a wave with stragglers left keeps
+    // running (spawning stopped, existing enemies still fightable) until
+    // the last one dies. The old budget-exhaustion early-timeout is gone —
+    // the timer itself is the spawn cutoff now, so it's redundant.
+    const aliveEnemies = this.entities.filter((e) => e.kind === 'enemy' && !e.dead).length;
     if (wm.phase === 'running') {
-      const aliveEnemies = this.entities.filter((e) => e.kind === 'enemy' && !e.dead).length;
       const requests = this.spawnDirector.update(dt, aliveEnemies);
       for (const req of requests) this.spawnEnemyFromRequest(req.kind, req.x, req.y);
-
-      if (this.spawnDirector.isBudgetExhausted && aliveEnemies === 0) {
-        wm.timeRemaining = 0;
-      }
 
       // Subtle music intensity bump during boss warning/an active boss —
       // cheap gain-ramp layer on the already-running, phase-synced loop
@@ -436,7 +512,7 @@ export class Game {
       this.onWaveTransition(bonus);
     }
 
-    const changed = wm.update(dt);
+    const changed = wm.update(dt, aliveEnemies);
     if (changed) {
       if (wm.phase === 'running') this.onWaveTransition(wm.pendingEarlyCallBonus);
       else if (wm.phase === 'allWavesComplete') {
@@ -454,7 +530,7 @@ export class Game {
   }
 
   private onWaveTransition(bonus: number): void {
-    this.spawnDirector = new SpawnDirector(this.waveManager.currentWave);
+    this.spawnDirector = new SpawnDirector(this.waveManager.currentWave, DIFFICULTY[this.difficulty].spawnRateMult);
     this.currentWaveCoinBonus = bonus;
   }
 
@@ -482,7 +558,19 @@ export class Game {
   }
 
   private spawnEnemyFromRequest(kind: SpawnKind, x: number, y: number): void {
-    this.entities.push(createEnemy(kind, x, y));
+    // Round 6: difficulty scales enemy HP/damage at spawn time via
+    // createEnemy's defOverride — Normal's 1.0 multipliers reproduce the
+    // unscaled base ENEMIES stats exactly.
+    const diff = DIFFICULTY[this.difficulty];
+    const def = ENEMIES[kind];
+    const override: Partial<EnemyDef> = {
+      hp: Math.round(def.hp * diff.enemyHpMult),
+      meleeDamage: Math.round(def.meleeDamage * diff.enemyDmgMult),
+    };
+    if (def.ranged) {
+      override.ranged = { ...def.ranged, damage: Math.round(def.ranged.damage * diff.enemyDmgMult) };
+    }
+    this.entities.push(createEnemy(kind, x, y, override));
   }
 
   // -------------------------------------------------------------------
@@ -504,8 +592,10 @@ export class Game {
     if (this.phase !== 'playing') return;
 
     if (input.wasPressed('F4')) {
-      this.waveManager.timeRemaining = -0.001;
-      const changed = this.waveManager.update(0);
+      // Round 6: WaveManager.update() no longer force-ends 'running' on its
+      // own (it's gated on aliveEnemies === 0 now) — use the dedicated debug
+      // bypass so this dev shortcut still unconditionally skips the wave.
+      const changed = this.waveManager.debugForceAdvance();
       if (changed) {
         if (this.waveManager.phase === 'running') this.onWaveTransition(this.waveManager.pendingEarlyCallBonus);
         else if (this.waveManager.phase === 'allWavesComplete') {
@@ -644,6 +734,9 @@ export class Game {
         : 1,
       wandCooldownPct:
         summonCooldownSeconds(this.shopLevels) > 0 ? 1 - this.summonCooldownRemaining / summonCooldownSeconds(this.shopLevels) : 1,
+      difficultyLabel: DIFFICULTY[this.difficulty].label,
+      difficultyColor: DIFFICULTY[this.difficulty].color,
+      spawningStopped: this.spawnDirector.spawningStopped,
     };
     drawHud(ctx, w, h, hudData);
     drawMinimap(
@@ -654,6 +747,8 @@ export class Game {
       this.obstacles,
       this.entities.filter((e) => e.kind === 'enemy' && !e.dead).map((e) => ({ x: e.x, y: e.y, isBoss: !!e.isBoss })),
       this.spawnDirector.bossWarningActive,
+      this.entities.filter((e) => e.kind === 'ally' && !e.dead).map((e) => ({ x: e.x, y: e.y })),
+      this.entities.filter((e) => e.kind === 'coin' && e.isGem && !e.dead).map((e) => ({ x: e.x, y: e.y })),
     );
 
     if (this.debug.overlay) {
@@ -698,6 +793,10 @@ export class Game {
 
     if (this.phase === 'gameover' || this.phase === 'victory') {
       this.drawGameOverScreen();
+    }
+
+    if (this.phase === 'start') {
+      drawStartScreen(ctx, w, h, this.difficulty);
     }
 
     this.lastRenderMs = performance.now() - t0;

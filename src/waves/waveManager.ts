@@ -18,13 +18,26 @@ export class WaveManager {
     return WAVES[this.waveIndex];
   }
 
-  /** Advance timers. Returns true if the phase changed this tick (caller should react). */
-  update(dt: number): boolean {
+  /**
+   * Advance timers. Returns true if the phase changed this tick (caller
+   * should react).
+   *
+   * `aliveEnemies` (round 6): while `phase === 'running'`, `timeRemaining`
+   * now governs only how long SpawnDirector may keep producing new spawn
+   * requests (see SpawnDirector's own `elapsed >= wave.durationSec` gate) —
+   * it no longer unilaterally ends the wave. Once it hits 0 the running
+   * phase instead waits for `aliveEnemies === 0` before transitioning to
+   * intermission, so "kill everything before moving on" is enforced here
+   * rather than by a fixed clock. Ignored during 'intermission' (that
+   * countdown still ends the phase on its own, unaffected by this change).
+   */
+  update(dt: number, aliveEnemies = 0): boolean {
     if (this.phase === 'allWavesComplete') return false;
     this.timeRemaining -= dt;
     if (this.timeRemaining <= 0) {
       this.timeRemaining = 0;
       if (this.phase === 'running') {
+        if (aliveEnemies > 0) return false; // spawning has stopped; still clearing the field
         this.phase = 'intermission';
         this.timeRemaining = this.currentWave.intermissionSec;
         return true;
@@ -34,6 +47,22 @@ export class WaveManager {
       }
     }
     return false;
+  }
+
+  /**
+   * Debug-only unconditional phase advance (F4 "skip wave"), bypassing the
+   * aliveEnemies gate above entirely — a dev shortcut should not itself get
+   * stuck waiting for a battlefield to clear.
+   */
+  debugForceAdvance(): boolean {
+    if (this.phase === 'allWavesComplete') return false;
+    if (this.phase === 'running') {
+      this.phase = 'intermission';
+      this.timeRemaining = this.currentWave.intermissionSec;
+      return true;
+    }
+    this.advanceToNextWave(0);
+    return true;
   }
 
   /** Player pressed Space during intermission. Returns the coin bonus earned (0..0.25). */

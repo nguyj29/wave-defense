@@ -6,31 +6,60 @@
 // Approach: render one loop's worth of audio into an AudioBuffer up front
 // via OfflineAudioContext (a continuous low drone whose oscillator
 // frequencies complete a whole number of cycles per loop, so it phase-loops
-// with zero click, plus a sparse bassline + arpeggio whose note envelopes
-// fully decay to silence before the loop boundary), then play that buffer
-// back on a real AudioBufferSourceNode with `loop = true` — genuinely
-// seamless looping on the audio clock, not a gapped <audio> tag loop.
+// with zero click, plus a bassline + lead riff whose note envelopes fully
+// decay to silence before the loop boundary), then play that buffer back on
+// a real AudioBufferSourceNode with `loop = true` — genuinely seamless
+// looping on the audio clock, not a gapped <audio> tag loop.
 //
 // A second, "intense" version of the same buffer (same length, same drone
 // phase) can be layered in during boss/high-pressure moments: both sources
 // are started at the same instant from the same offset, so they never drift
 // out of sync with each other — see setIntensity().
+//
+// Round 6: reworked per feedback that the music was too quiet and wanted a
+// genuinely different piece, not just a volume bump — see DECISIONS.md for
+// the full writeup. Summary of what changed:
+//  - BASE_VOLUME raised from 0.16 to 0.42 (~2.6x) — clearly the dominant
+//    ambient layer now, while SFX's masterGain (0.5 in sfx.ts) is per-shot/
+//    per-hit and still cuts through on top rather than being buried.
+//  - LOOP_SECONDS moved from 8 to 12 and the tempo doubled (was 1 chord/
+//    bass-note per second; now a driving 8th-note bass pulse at ~140bpm-
+//    equivalent spacing) with a 4-chord minor-key progression (Am-F-C-G,
+//    a completely different harmonic skeleton from the old single-note
+//    drone-plus-arpeggio) and a syncopated lead riff instead of the old
+//    straight ascending arpeggio — reads as a distinct, more driving/upbeat
+//    piece rather than the prior ambient drone turned up.
 // ============================================================================
 
 import { getSharedAudioContext } from './sfx.ts';
 
-const LOOP_SECONDS = 8;
-const BASE_VOLUME = 0.16; // clearly under SFX (masterGain 0.5 in sfx.ts) so gunfire/hits stay audible on top
-const INTENSE_VOLUME = 0.09; // the extra boss-mode layer, additive on top of the base loop
+const LOOP_SECONDS = 12;
+const BASE_VOLUME = 0.42; // "much louder" ask — still under SFX's masterGain (0.5) so gunfire/hits read on top
+const INTENSE_VOLUME = 0.22; // the extra boss-mode layer, additive on top of the base loop (scaled up alongside BASE_VOLUME)
 
 let musicGain: GainNode | null = null;
 let intenseGain: GainNode | null = null;
 let started = false;
 let muted = false;
 
-/** A few notes (Hz) from a simple minor pentatonic-ish palette, low register for the bass. */
-const BASS_NOTES = [110, 130.81, 98, 146.83]; // A2, C3, G2, D3
-const ARP_NOTES = [440, 523.25, 392, 587.33, 523.25]; // A4, C5, G4, D5, C5
+// New harmonic content (round 6): a 4-chord i-VI-III-VII minor progression
+// (Am - F - C - G), one chord per 3-second bar (4 bars = 12s loop), each
+// note chosen so it completes a whole number of cycles in LOOP_SECONDS at
+// the chord roots' actual frequencies isn't required here (unlike the old
+// drone) since every note's own envelope decays to ~0 well before the loop
+// wraps — only the drone needs phase-exactness, and the drone below is kept
+// on the same trick as before.
+const CHORD_ROOTS = [110, 87.31, 130.81, 98]; // A2, F2, C3, G2 — one per 3s bar
+const CHORD_THIRDS = [130.81, 110, 164.81, 123.47]; // C3, A2, E3, B2 (minor for Am/F/G-ish color, major-ish lift for C)
+const CHORD_FIFTHS = [164.81, 130.81, 196.0, 146.83]; // E3, C3, G3, D3
+
+// Syncopated lead riff (Hz), higher register — a distinct rhythmic pattern
+// (long-short-short-long feel via the `steps` timing table below) rather
+// than the old straight even-eighths ascending arpeggio.
+const LEAD_NOTES = [440, 523.25, 587.33, 659.25, 587.33, 523.25, 440, 392];
+// Beat offsets (seconds, within the 12s loop) at which the lead fires —
+// irregular spacing is what gives it the syncopated feel.
+const LEAD_STEP_TIMES = [0, 0.75, 1.5, 2.25, 3.75, 5.25, 6, 6.75, 8.25, 9, 9.75, 10.5];
 
 function scheduleToneEnvelope(
   ctx: BaseAudioContext,
@@ -58,9 +87,9 @@ function scheduleToneEnvelope(
 
 /**
  * Renders one seamless LOOP_SECONDS buffer. `intense` adds a sparser
- * high-hat-like noise-tick layer on top of the same drone+bass+arp, used for
- * boss waves — same length/phase as the base loop so the two can play back
- * simultaneously in perfect sync.
+ * high-hat-like noise-tick layer on top of the same drone+bass+chords+lead,
+ * used for boss waves — same length/phase as the base loop so the two can
+ * play back simultaneously in perfect sync.
  */
 async function renderLoopBuffer(ctx: AudioContext, intense: boolean): Promise<AudioBuffer> {
   const OfflineCtor = (window as unknown as { OfflineAudioContext?: typeof OfflineAudioContext }).OfflineAudioContext;
@@ -71,19 +100,16 @@ async function renderLoopBuffer(ctx: AudioContext, intense: boolean): Promise<Au
   master.connect(offline.destination);
 
   if (!intense) {
-    // Continuous low drone: two detuned sines whose frequencies complete a
-    // whole number of cycles in LOOP_SECONDS, so the waveform's phase at the
-    // loop end exactly matches its phase at the start — no click, no fade
-    // needed. 110Hz * 8s = 880 cycles; 165.0Hz isn't quite integer-friendly
-    // at 8s so use 164.5? Simpler: pick 110 and 220.5 -> not integer either.
-    // Use 110 and 82.5 -> not integer. Stick to exact integer-cycle pairs:
-    // 110Hz (880 cycles/8s) and 55Hz (440 cycles/8s), an octave apart, both
-    // exact — a calm root+sub drone.
+    // Continuous low sub-drone on the tonic (A2/A1): frequencies chosen to
+    // complete a whole number of cycles in LOOP_SECONDS (12s) so the
+    // waveform's phase at the loop end exactly matches its phase at the
+    // start — no click, no fade needed. 110Hz*12s=1320 cycles, 55Hz*12s=660
+    // cycles, both exact.
     const drone1 = offline.createOscillator();
     drone1.type = 'sine';
     drone1.frequency.value = 110;
     const droneGain1 = offline.createGain();
-    droneGain1.gain.value = 0.05;
+    droneGain1.gain.value = 0.04;
     drone1.connect(droneGain1);
     droneGain1.connect(master);
     drone1.start(0);
@@ -93,26 +119,44 @@ async function renderLoopBuffer(ctx: AudioContext, intense: boolean): Promise<Au
     drone2.type = 'sine';
     drone2.frequency.value = 55;
     const droneGain2 = offline.createGain();
-    droneGain2.gain.value = 0.07;
+    droneGain2.gain.value = 0.06;
     drone2.connect(droneGain2);
     droneGain2.connect(master);
     drone2.start(0);
     drone2.stop(LOOP_SECONDS);
 
-    // Sparse bassline: one short note per second, each fully decayed well
-    // before the next starts (and before the loop wraps), so no envelope
-    // straddles the seam.
-    for (let step = 0; step < LOOP_SECONDS; step++) {
-      const note = BASS_NOTES[step % BASS_NOTES.length];
-      scheduleToneEnvelope(offline, master, 'triangle', note, step, 0.02, 0.55, 0.22);
+    // Driving 8th-note bass pulse (2 hits/sec, i.e. every 0.5s) walking the
+    // 4-chord progression's root one bar (3s) at a time — a completely
+    // different rhythmic feel from the old 1-note-per-second sparse bass.
+    const barSec = LOOP_SECONDS / CHORD_ROOTS.length; // 3s/bar, 4 bars
+    for (let bar = 0; bar < CHORD_ROOTS.length; bar++) {
+      const root = CHORD_ROOTS[bar];
+      const barStart = bar * barSec;
+      for (let pulse = 0; pulse < barSec / 0.5; pulse++) {
+        const t = barStart + pulse * 0.5;
+        scheduleToneEnvelope(offline, master, 'sawtooth', root, t, 0.01, 0.28, 0.16);
+      }
     }
 
-    // Sparse arpeggiated pad on top, offset from the bass and at half the
-    // density so it reads as a light melodic accent rather than competing
-    // rhythmically with the bass.
-    for (let step = 0; step < LOOP_SECONDS; step += 2) {
-      const note = ARP_NOTES[(step / 2) % ARP_NOTES.length];
-      scheduleToneEnvelope(offline, master, 'sine', note, step + 0.5, 0.05, 1.2, 0.09);
+    // Sustained chord pad: root+third+fifth held for most of each bar,
+    // giving the new progression (Am-F-C-G) its harmonic color — the old
+    // loop never sounded a chord, only a single-note drone/arpeggio, so this
+    // alone makes it read as a different piece.
+    for (let bar = 0; bar < CHORD_ROOTS.length; bar++) {
+      const barStart = bar * barSec;
+      const chordDur = barSec * 0.85;
+      scheduleToneEnvelope(offline, master, 'triangle', CHORD_ROOTS[bar] * 2, barStart, 0.15, chordDur, 0.05);
+      scheduleToneEnvelope(offline, master, 'triangle', CHORD_THIRDS[bar] * 2, barStart, 0.15, chordDur, 0.045);
+      scheduleToneEnvelope(offline, master, 'triangle', CHORD_FIFTHS[bar] * 2, barStart, 0.15, chordDur, 0.04);
+    }
+
+    // Syncopated lead riff on top — irregular note timing (LEAD_STEP_TIMES)
+    // instead of the old strictly-every-2-seconds ascending arpeggio, so the
+    // melodic rhythm itself is different, not just the notes.
+    for (let i = 0; i < LEAD_STEP_TIMES.length; i++) {
+      const t = LEAD_STEP_TIMES[i];
+      const note = LEAD_NOTES[i % LEAD_NOTES.length];
+      scheduleToneEnvelope(offline, master, 'square', note, t, 0.01, 0.35, 0.06);
     }
   } else {
     // Boss/high-pressure layer: a soft rhythmic "tick" (short filtered noise

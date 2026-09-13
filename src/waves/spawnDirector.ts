@@ -33,8 +33,11 @@ export class SpawnDirector {
   private killTimestamps: number[] = [];
   private smoothedKillRate = 0;
   private normalizedTarget = 0; // last accepted normalized target (post-hysteresis)
-  currentRate = SPAWN_DIRECTOR.baseRate;
+  currentRate: number;
   private spawnAccumulator = 0;
+  // Difficulty scaling (round 6): uniformly scales baseRate/maxRate/aliveCap
+  // for this wave's director. 1.0 on Normal reproduces prior balance exactly.
+  private spawnRateMult: number;
 
   private spawnPoints: SpawnPoint[];
   private spawnPointIndex = 0;
@@ -50,10 +53,27 @@ export class SpawnDirector {
   bossReadyToSpawn = false;
   private elapsed = 0;
 
-  constructor(wave: WaveDef) {
+  constructor(wave: WaveDef, spawnRateMult = 1) {
     this.wave = wave;
+    this.spawnRateMult = spawnRateMult;
+    this.currentRate = SPAWN_DIRECTOR.baseRate * spawnRateMult;
     this.spawnPoints = activeSpawnPoints(wave.wave);
     this.clumpTarget = SPAWN_DIRECTOR.clumpSizeMin;
+  }
+
+  /** Difficulty-scaled alive cap for this director (see spawnRateMult). */
+  get effectiveAliveCap(): number {
+    return Math.round(SPAWN_DIRECTOR.aliveCap * this.spawnRateMult);
+  }
+
+  /**
+   * True once this wave's durationSec has elapsed — from here on, update()
+   * refuses to produce any new non-boss-telegraph-committed spawn request.
+   * The wave itself does NOT end here (see game.ts/WaveManager): it only
+   * stops new enemies from appearing. See DECISIONS.md round 6.
+   */
+  get spawningStopped(): boolean {
+    return this.elapsed >= this.wave.durationSec;
   }
 
   get budgetSpent(): number {
@@ -85,21 +105,32 @@ export class SpawnDirector {
     this.elapsed += dt;
     this.updateSmoothedKillRate();
 
+    const baseRate = SPAWN_DIRECTOR.baseRate * this.spawnRateMult;
+    const maxRate = SPAWN_DIRECTOR.maxRate * this.spawnRateMult;
+    const aliveCap = this.effectiveAliveCap;
+
     const normalized = Math.max(0, Math.min(1, this.smoothedKillRate / SPAWN_DIRECTOR.killRateAtMax));
     if (Math.abs(normalized - this.normalizedTarget) > SPAWN_DIRECTOR.hysteresis) {
       this.normalizedTarget = normalized;
     }
-    const targetRate = SPAWN_DIRECTOR.baseRate + (SPAWN_DIRECTOR.maxRate - SPAWN_DIRECTOR.baseRate) * this.normalizedTarget;
+    const targetRate = baseRate + (maxRate - baseRate) * this.normalizedTarget;
 
     const rampSec = targetRate > this.currentRate ? SPAWN_DIRECTOR.rampUpSec : SPAWN_DIRECTOR.rampDownSec;
-    const maxDelta = ((SPAWN_DIRECTOR.maxRate - SPAWN_DIRECTOR.baseRate) / rampSec) * dt;
+    const maxDelta = ((maxRate - baseRate) / rampSec) * dt;
     const diff = targetRate - this.currentRate;
     this.currentRate += Math.abs(diff) < maxDelta ? diff : Math.sign(diff) * maxDelta;
 
     const requests: SpawnRequest[] = [];
 
+    // Once the wave's durationSec has elapsed, new spawns stop entirely
+    // (round 6 — the timer now only governs spawning, not the wave-end
+    // transition; see WaveManager/game.ts for the aliveEnemies-gated end).
+    // A boss telegraph already in progress is allowed to complete/spawn
+    // even past the cutoff — it was already committed to.
+    const spawningAllowed = !this.spawningStopped;
+
     // Boss telegraph/spawn timing, independent of the clump/pause cycle.
-    if (this.wave.boss > 0 && !this.bossSpawned && !this.bossWarningActive) {
+    if (spawningAllowed && this.wave.boss > 0 && !this.bossSpawned && !this.bossWarningActive) {
       const spawnedSoFar = this.spawnedGrunts + this.spawnedArchers;
       const nonBossBudget = this.wave.grunts + this.wave.archers;
       const budgetTrigger = nonBossBudget > 0 && spawnedSoFar / nonBossBudget >= SPAWN_DIRECTOR.bossBudgetFraction;
@@ -123,12 +154,12 @@ export class SpawnDirector {
       this.bossReadyToSpawn = false;
     }
 
-    if (aliveCount < SPAWN_DIRECTOR.aliveCap) {
+    if (spawningAllowed && aliveCount < aliveCap) {
       if (this.pauseTimer > 0) {
         this.pauseTimer -= dt;
       } else {
         this.spawnAccumulator += this.currentRate * dt;
-        while (this.spawnAccumulator >= 1 && aliveCount + requests.length < SPAWN_DIRECTOR.aliveCap) {
+        while (this.spawnAccumulator >= 1 && aliveCount + requests.length < aliveCap) {
           const kind = this.pickNextKind();
           if (!kind) break;
           this.spawnAccumulator -= 1;
@@ -197,6 +228,8 @@ export class SpawnDirector {
       clumpProgress: this.clumpSpawnedInClump,
       clumpTarget: this.clumpTarget,
       pauseTimer: Math.max(0, this.pauseTimer),
+      spawningStopped: this.spawningStopped,
+      effectiveAliveCap: this.effectiveAliveCap,
     };
   }
 }

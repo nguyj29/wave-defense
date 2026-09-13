@@ -10,6 +10,11 @@ export interface MinimapEnemy {
   isBoss: boolean;
 }
 
+export interface MinimapPoint {
+  x: number;
+  y: number;
+}
+
 export function drawMinimap(
   ctx: CanvasRenderingContext2D,
   screenW: number,
@@ -18,6 +23,8 @@ export function drawMinimap(
   obstacles: Obstacle[],
   enemies: MinimapEnemy[],
   bossWarning: boolean,
+  allies: MinimapPoint[] = [],
+  gems: MinimapPoint[] = [],
 ): void {
   const x = screenW - SIZE - MARGIN;
   const y = MARGIN;
@@ -46,6 +53,25 @@ export function drawMinimap(
   ctx.beginPath();
   ctx.arc(x + playerX * scale, y + playerY * scale, 3, 0, Math.PI * 2);
   ctx.fill();
+
+  // Ally blips — same blue as their in-world color (#3fa9f5, see
+  // config.ts::ALLY.color), clearly distinct from the enemy purple/red below.
+  ctx.fillStyle = '#3fa9f5';
+  for (const a of allies) {
+    ctx.beginPath();
+    ctx.arc(x + a.x * scale, y + a.y * scale, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Gem blips — matches the gem's in-world cyan (#5fe0ff, see
+  // entities/factory.ts::createCoin), so a player can navigate to one even
+  // though (unlike coins) it doesn't auto-magnetize.
+  ctx.fillStyle = '#5fe0ff';
+  for (const g of gems) {
+    ctx.beginPath();
+    ctx.arc(x + g.x * scale, y + g.y * scale, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   // Enemy blips
   for (const e of enemies) {

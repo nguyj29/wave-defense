@@ -28,6 +28,12 @@ export interface HudData {
   activeSlot: 1 | 2 | 3;
   rifleReloadPct: number; // 0..1, 1 = fully loaded/no reload in progress
   wandCooldownPct: number; // 0..1, 1 = ready
+  // Current difficulty (round 6), small/unobtrusive HUD readout.
+  difficultyLabel: string;
+  difficultyColor: string;
+  // Round 6: once spawning has stopped for this wave (timer elapsed) but
+  // enemies remain, the timer display switches from a countdown to this.
+  spawningStopped: boolean;
 }
 
 function fmtTime(t: number): string {
@@ -128,6 +134,24 @@ export function drawHud(ctx: CanvasRenderingContext2D, screenW: number, screenH:
   ctx.fillStyle = d.musicMuted ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.8)';
   ctx.fillText(d.musicMuted ? '♪ off (M)' : '♪ on (M)', screenW - 16, 16);
 
+  // Current difficulty, small and unobtrusive, just below the music toggle.
+  // A colored swatch (with a thin light border, since Hell's color is
+  // near-black and would otherwise vanish against the canvas) plus a plain
+  // white label reads clearly regardless of which difficulty color is active.
+  {
+    const swatchSize = 10;
+    const swatchX = screenW - 16 - swatchSize;
+    const swatchY = 32 - swatchSize / 2;
+    ctx.fillStyle = d.difficultyColor;
+    ctx.fillRect(swatchX, swatchY, swatchSize, swatchSize);
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(swatchX, swatchY, swatchSize, swatchSize);
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.fillText(d.difficultyLabel, swatchX - 6, 32);
+  }
+
   // Player HP (bottom-left)
   drawBar(ctx, 16, screenH - 56, 220, 22, d.playerHp / d.playerMaxHp, '#5ec96a', `HP ${Math.ceil(d.playerHp)}/${d.playerMaxHp}`);
   // Core HP (bottom-left, above player)
@@ -176,12 +200,25 @@ export function drawHud(ctx: CanvasRenderingContext2D, screenW: number, screenH:
   ctx.fillStyle = '#cfd8e3';
   ctx.fillText(`Enemies alive: ${d.enemiesAlive}`, 16, 62);
 
-  // Wave/intermission timer, centered top
+  // Wave/intermission timer, centered top. Round 6: the running-phase timer
+  // now only governs spawning, not the wave's end — once it hits 0 the label
+  // switches from a countdown to a "clearing remaining enemies" indicator
+  // rather than implying the wave itself ends at 0 (it doesn't until the
+  // last enemy is dead).
   ctx.textAlign = 'center';
   if (d.wavePhase === 'running') {
     ctx.font = 'bold 20px sans-serif';
-    ctx.fillStyle = '#fff';
-    ctx.fillText(fmtTime(d.timeRemaining), screenW / 2, 16);
+    if (!d.spawningStopped) {
+      ctx.fillStyle = '#fff';
+      ctx.fillText(`Spawning ends in: ${fmtTime(d.timeRemaining)}`, screenW / 2, 16);
+    } else if (d.enemiesAlive > 0) {
+      const pulse = 0.7 + 0.3 * Math.sin(performance.now() / 200);
+      ctx.fillStyle = `rgba(255,214,102,${pulse})`;
+      ctx.fillText('Clearing remaining enemies...', screenW / 2, 16);
+    } else {
+      ctx.fillStyle = '#fff';
+      ctx.fillText('Wave clear!', screenW / 2, 16);
+    }
   } else if (d.wavePhase === 'intermission') {
     ctx.font = 'bold 20px sans-serif';
     ctx.fillStyle = '#ffd766';

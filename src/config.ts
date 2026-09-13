@@ -427,8 +427,15 @@ export const EARLY_CALL = {
 
 export const COINS = {
   pickupRadius: 40,
-  magnetRadius: 40, // magnet begins at the same radius as pickup per spec
-  magnetSpeed: 400,
+  magnetRadius: 40, // gems only (round 6): manual walk-up, magnet begins at the same radius as pickup
+  // Raised from 400 (round 6): coins now home in on the player unconditionally,
+  // from anywhere on the map (see game.ts's coin loop) — at the old speed, a
+  // coin dropped far away (e.g. an ally kill on the far side of the map)
+  // would take many seconds to visibly arrive, reading as sluggish rather
+  // than "snappy magnet." 650 covers the map's ~4800-unit span in a much
+  // more satisfying ~7s worst case while still leaving pickup feeling like a
+  // deliberate glide-in rather than an instant teleport.
+  magnetSpeed: 650,
 };
 
 // ---------------------------------------------------------------------------
@@ -484,4 +491,75 @@ export const SHOP_ITEMS: ShopItemDef[] = [
 
 export const DEBUG = {
   spawnCycleTypes: ['grunt', 'archer', 'boss'] as const,
+};
+
+// ---------------------------------------------------------------------------
+// Difficulty selector (round 6): chosen on the start screen before a run,
+// stored on Game and applied at reset()/onWaveTransition() time. `normal` is
+// exactly 1.0 across the board so it reproduces the exact balance every prior
+// round was tuned against — see DECISIONS.md for the full reasoning behind
+// each tier's numbers. Colors are the exact hues the brief specified
+// (green/yellow/orange/red/near-black); `textColor` is chosen per-swatch so
+// the label stays legible against that particular background.
+// ---------------------------------------------------------------------------
+export type DifficultyId = 'easy' | 'normal' | 'hard' | 'veryHard' | 'hell';
+
+export interface DifficultyDef {
+  label: string;
+  color: string;
+  textColor: string;
+  enemyHpMult: number;
+  enemyDmgMult: number;
+  spawnRateMult: number; // scales SPAWN_DIRECTOR.baseRate/maxRate/aliveCap uniformly
+  rewardMult: number; // scales coin + gem payout
+}
+
+export const DIFFICULTY: Record<DifficultyId, DifficultyDef> = {
+  easy: {
+    label: 'Easy',
+    color: '#3fae4a',
+    textColor: '#0a1a0a',
+    enemyHpMult: 0.7,
+    enemyDmgMult: 0.6,
+    spawnRateMult: 0.75,
+    rewardMult: 0.9,
+  },
+  normal: {
+    label: 'Normal',
+    color: '#e0c341',
+    textColor: '#241d02',
+    enemyHpMult: 1.0,
+    enemyDmgMult: 1.0,
+    spawnRateMult: 1.0,
+    rewardMult: 1.0,
+  },
+  hard: {
+    label: 'Hard',
+    color: '#e07a1f',
+    textColor: '#241200',
+    enemyHpMult: 1.3,
+    enemyDmgMult: 1.3,
+    spawnRateMult: 1.2,
+    rewardMult: 1.15,
+  },
+  veryHard: {
+    label: 'Very Hard',
+    color: '#c62828',
+    textColor: '#ffffff',
+    enemyHpMult: 1.7,
+    enemyDmgMult: 1.6,
+    spawnRateMult: 1.45,
+    rewardMult: 1.35,
+  },
+  hell: {
+    // Near-black rather than pure #000 so it still reads as "a color" (not a
+    // rendering hole) even before the selection/legibility border is drawn.
+    label: 'Hell',
+    color: '#100d0d',
+    textColor: '#e8b4b4',
+    enemyHpMult: 2.5,
+    enemyDmgMult: 2.2,
+    spawnRateMult: 1.8,
+    rewardMult: 1.6,
+  },
 };

@@ -14,6 +14,11 @@ export interface WorldContext {
   obstacles: Obstacle[];
   pathfinder: Pathfinder;
   spawnProjectile: (e: Entity) => void;
+  // Live player position (round 6): lets a behavior bias toward the player
+  // without needing the full Entity or a grid lookup — see
+  // entities/behaviors/ally.ts's player-summoned idle-drift target.
+  playerX: number;
+  playerY: number;
 }
 
 export function findEntity(ctx: WorldContext, id: number): Entity | undefined {

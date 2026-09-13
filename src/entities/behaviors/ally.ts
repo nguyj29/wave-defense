@@ -48,11 +48,18 @@ export function updateAlly(e: Entity, ctx: WorldContext): void {
   // Nothing to fight in range: biased-random-walk idle. Each tick, nudge a
   // persistent idle velocity (e.ai.idleVx/idleVy) by a small random
   // acceleration, clamp it to idleMaxSpeed, and add a small constant
-  // homeward acceleration toward CORE — much weaker than the random
-  // component so it reads as "wandering, but drifting home over time"
-  // rather than ever walking a straight line to base. Beyond
+  // homeward acceleration toward a "home" point — much weaker than the
+  // random component so it reads as "wandering, but drifting home over
+  // time" rather than ever walking a straight line to base. Beyond
   // idleSoftBoundRadius the homeward bias scales up (a soft leash) instead
   // of snapping to a direct beeline.
+  //
+  // Round 6: the home point differs by ally origin — a player-summoned ally
+  // (e.summonedByPlayer) drifts toward the player's live position (re-read
+  // every tick via ctx.playerX/Y, so it tracks a moving player rather than a
+  // snapshot) so summoned allies read as "following you around" while idle;
+  // a spawner-made ally keeps drifting toward CORE exactly as before, since
+  // its job is guarding the base, not the player.
   e.ai.state = 'idle';
   let ivx = e.ai.idleVx ?? 0;
   let ivy = e.ai.idleVy ?? 0;
@@ -62,8 +69,10 @@ export function updateAlly(e: Entity, ctx: WorldContext): void {
   ivx += Math.cos(randAngle) * randAccel * ctx.dt;
   ivy += Math.sin(randAngle) * randAccel * ctx.dt;
 
-  const hdx = CORE.x - e.x;
-  const hdy = CORE.y - e.y;
+  const homeX = e.summonedByPlayer ? ctx.playerX : CORE.x;
+  const homeY = e.summonedByPlayer ? ctx.playerY : CORE.y;
+  const hdx = homeX - e.x;
+  const hdy = homeY - e.y;
   const homeDist = Math.hypot(hdx, hdy) || 1;
   let biasAccel = ALLY.idleHomeBiasAccel;
   if (homeDist > ALLY.idleSoftBoundRadius) {

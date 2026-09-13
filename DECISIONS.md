@@ -1179,3 +1179,306 @@ human playing for a full 15-minute session (the full 3-minute wave timer
 end-to-end at real speed, the 5-wave "prototype complete" victory screen
 reached "the honest way" without F4, and subjective feel of the spawn
 director's ramp/decay).
+
+## Difficulty selector, kill-everything wave-end, coin auto-magnet, minimap ally/gem blips, split ally idle-drift, louder/new music (round 6)
+
+### 1. Difficulty selector
+
+New `DifficultyId`/`DifficultyDef`/`DIFFICULTY` table in `config.ts`. `normal`
+is exactly 1.0 across every multiplier so it reproduces every prior round's
+balance work unchanged — the brief's explicit requirement. Exact numbers:
+
+| id       | label      | color     | enemyHpMult | enemyDmgMult | spawnRateMult | rewardMult |
+|----------|-----------|-----------|-------------|--------------|---------------|------------|
+| easy     | Easy      | `#3fae4a` | 0.7         | 0.6          | 0.75          | 0.9        |
+| normal   | Normal    | `#e0c341` | 1.0         | 1.0          | 1.0           | 1.0        |
+| hard     | Hard      | `#e07a1f` | 1.3         | 1.3          | 1.2           | 1.15       |
+| veryHard | Very Hard | `#c62828` | 1.7         | 1.6          | 1.45          | 1.35       |
+| hell     | Hell      | `#100d0d` | 2.5         | 2.2          | 1.8           | 1.6        |
+
+Reasoning: `enemyDmgMult` is kept slightly below `enemyHpMult` at every tier
+above Normal (e.g. Hell 2.2 vs 2.5) because damage compounds multiplicatively
+with the player's own regen-delay/iframe mechanics in a way flat HP doesn't
+— a damage multiplier that matched HP 1:1 risked one-shot chip-death chains
+feeling unfair rather than "hard." `spawnRateMult` scales
+`SPAWN_DIRECTOR.baseRate`/`maxRate`/`aliveCap` uniformly (see
+`SpawnDirector`'s new `spawnRateMult` constructor param and
+`effectiveAliveCap` getter) — Hell's 90-enemy Normal cap becomes a 162-alive
+firehose, confirmed live (see verification below). `rewardMult` gives higher
+tiers a real payout bump (not just "harder for nothing") — applied to both
+the per-kill coin value and the flat gem `coinValue`, on top of (not
+replacing) the existing early-call bonus and gem-chance mechanics, which stay
+independent per DECISIONS.md's prior "gems are a separate mechanic" call.
+Easy pays out slightly *less* (0.9x) since it's already lower-risk.
+
+Colors are the exact hues requested (green/yellow/orange/red/near-black).
+Hell uses `#100d0d` rather than pure black so it still reads as "a very dark
+color" rather than "a rendering hole," and both the start-screen button and
+the HUD swatch always draw a thin `rgba(255,255,255,0.45-0.5)` border
+regardless of selection state specifically so the Hell swatch never
+disappears against the dark backdrop — confirmed legible in the live
+screenshot (see verification).
+
+New `src/ui/startScreen.ts` (matches the existing one-file-per-screen
+pattern: `hud.ts`, `minimap.ts`, `shopPanel.ts`): `drawStartScreen()` +
+`hitTestStartScreen()` share one button-layout function so a click always
+lands on exactly what was drawn. Selectable via number keys 1-5, arrow
+keys (wraps), mouse click on a difficulty swatch, and confirmed via
+Enter/Space or clicking START.
+
+**Where the start screen fits into the phase machine**: `GamePhase` already
+had a `'start'` value declared but nothing ever used it — `reset()`
+unconditionally set `phase = 'playing'`, so the game skipped straight into
+play on load with no way to reach it. This round actually wires it up: the
+constructor now runs `reset()` (to build the world/player once) and then
+overrides `phase = 'start'`; `Game.handleStartScreenInput()` handles the
+selector and, on confirm, calls `reset()` again (which applies the then-
+current `this.difficulty` and sets `phase = 'playing'`).
+
+**Restart-after-death decision**: the brief left "keeps showing/respects the
+selection" vs "returns to the selector" as our call. Chose: **pressing R on
+game-over/victory returns to the difficulty selector** (`phase = 'start'`)
+rather than instantly replaying, with the previous difficulty preselected
+(`this.difficulty` is never reset by `reset()` itself, only by explicit
+selector input) — this both respects the prior selection *and* lets the
+player change it, which a straight "instant replay" couldn't do without a
+separate hotkey.
+
+Difficulty is applied at two points: `Game.spawnEnemyFromRequest()` scales
+`ENEMIES[kind].hp`/`meleeDamage`/`ranged.damage` via `createEnemy`'s existing
+`defOverride` parameter (no change needed to `createEnemy` itself), and
+`Game.reset()`/`onWaveTransition()` pass `DIFFICULTY[difficulty].spawnRateMult`
+into `new SpawnDirector(wave, mult)`. The HUD shows the current difficulty
+as a small colored swatch + label, top-right below the music toggle
+(`HudData.difficultyLabel`/`difficultyColor`).
+
+**Verified live** (Playwright against a real Chromium): selecting Hell via
+`Digit5` highlighted it with the white selection border in a screenshot; an
+F6-debug-spawned grunt on Hell had `health.maxHp === 75` (30 base * 2.5,
+exact); `spawnDirector.effectiveAliveCap === 162` on Hell (90 * 1.8, exact).
+
+### 2. Wave-end timing: kill everything, don't just wait out the clock
+
+`WaveManager.update(dt, aliveEnemies)` now takes the current alive-enemy
+count: while `phase === 'running'`, `timeRemaining` still counts down and
+clamps at 0 exactly as before, but hitting 0 only transitions to
+`'intermission'` if `aliveEnemies === 0` too; otherwise it just returns
+`false` and stays `'running'` (spawning already stopped, existing enemies
+still fully fightable) until a later tick sees `aliveEnemies === 0`.
+`'intermission'`'s own countdown-to-next-wave is untouched.
+
+`SpawnDirector` independently refuses to produce any new non-boss-telegraph
+spawn request once its own `elapsed >= wave.durationSec` (new `spawningStopped`
+getter) — a boss telegraph already in progress is allowed to finish/spawn
+even past the cutoff since it was already committed to, but no new clump/
+regular spawn starts. This means `game.ts` doesn't need to gate its call to
+`spawnDirector.update()` at all — the director gates itself, per the
+brief's suggested option. The old `isBudgetExhausted && aliveEnemies === 0`
+early-timeout in `game.ts` (which used to zero `timeRemaining` early) was
+removed entirely — redundant now that the timer itself is the sole spawn
+cutoff and the alive-count gate handles the "already cleared, waiting on
+nothing" case naturally (transitions the instant the timer *and* the count
+agree).
+
+F4 ("skip wave" dev shortcut) previously worked by forcing
+`timeRemaining = -0.001` then calling `update(0)`, relying on the old
+unconditional-transition behavior. Since `update()` is now gated on
+`aliveEnemies`, F4 would otherwise get stuck if any enemies were alive —
+clearly wrong for a dev shortcut. Added `WaveManager.debugForceAdvance()`,
+an unconditional phase-advance bypassing the gate entirely, and pointed F4
+at it instead.
+
+HUD label (`ui/hud.ts`): while `'running'` and spawning hasn't stopped yet,
+shows `"Spawning ends in: m:ss"` (was a bare countdown implying the wave
+itself ends there). Once spawning has stopped: if enemies remain, a pulsing
+amber `"Clearing remaining enemies..."`; if none remain (the one-tick window
+before the phase actually flips), `"Wave clear!"`.
+
+**Soft-lock check** (per the brief's explicit ask): reviewed
+`entities/behaviors/enemy.ts` and the flow-field pathing
+(`world/flowfield.ts`) — enemies path via a precomputed Dijkstra flow field
+over obstacle-free cells, so an enemy cannot spawn or wander into a cell
+inside a solid obstacle in the first place (obstacles carve cells out of the
+field at recompute time), and the kiter archer's kite/strafe logic only
+maintains distance, never flees off the flow field's reachable area. I did
+not find a path to a genuinely stuck/unreachable enemy. The one soft-lock
+*shape* that remains theoretically possible and is explicitly *not* fixed
+here (the brief allows this as acceptable tension): if `SPAWN_DIRECTOR`'s
+`aliveCap` combined with an unlucky archer kiting at max range behind heavy
+obstacle cover makes the last 1-2 enemies very slow to actually close with
+and kill, the player just has to chase them down — by design now, since
+that's the whole point of this round's change. Worth a human playtest to
+confirm this never drags on uncomfortably long in practice, especially on
+Hell where `spawnRateMult` raises `aliveCap` to 162 (more stragglers
+possible at the tail of a wave).
+
+**Verified live**: force-set `waveManager.timeRemaining = 0` and
+`spawnDirector['elapsed'] = 9999` (spawning fully expired) with exactly one
+enemy alive — `waveManager.phase` stayed `'running'` across multiple fixed
+ticks (`spawningStopped: true`, `alive: 1`, `phase: 'running'`); killing that
+enemy (`dead = true`) then transitioned to `'intermission'` on the next tick.
+Screenshot confirms the "Clearing remaining enemies..." HUD label rendering
+live under these exact conditions.
+
+### 3. Coins auto-magnetize from anywhere; gems stay manual
+
+`game.ts`'s coin/gem loop: removed the `magnetRadius` distance gate for
+non-gem coins entirely — every live coin now unconditionally accelerates
+toward the player's current position from the instant it drops, regardless
+of who/what killed the enemy or how far away. Gems (`c.isGem`) are
+explicitly excluded from this branch and keep the exact old behavior
+(magnet only inside `COINS.magnetRadius`, which already equals
+`pickupRadius`, i.e. effectively manual walk-up) — `if (!c.isGem || d <=
+COINS.magnetRadius)` is the one-line branch that keeps the two paths
+sharing the same magnet-then-pickup code without duplicating it, per the
+brief's ask to reuse the existing `isGem` flag rather than fork the loop.
+
+`COINS.magnetSpeed` raised from 400 to 650 (see config.ts comment): at 400,
+a coin dropped across a large chunk of the now-4800-unit map would take
+several visible seconds crawling toward the player, reading as sluggish
+rather than a satisfying "snap" now that the mechanic is "from anywhere."
+650 was picked as a felt-right middle ground (covers the map's diagonal
+span in single-digit seconds) rather than an instant teleport, which would
+undercut the "coins visibly fly across the map" spectacle the brief
+specifically wants allies-killing-far-away to produce.
+
+**Verified live**: spawned a coin 2000 units from the player and a gem 2000
+units on the other side; after 0.5s the coin had moved ~325 units toward the
+player (`4460 -> 4135`, exact direction toward player's x) while the gem's
+position was pixel-identical to its spawn point (`460,4520` unchanged) —
+confirms coins magnetize unconditionally and gems do not.
+
+### 4. Minimap: ally + gem blips
+
+`ui/minimap.ts::drawMinimap()` gained two new optional params (default `[]`,
+so no call site besides `game.ts`'s needed updating for type-safety, though
+`game.ts`'s was updated to actually pass real data): `allies: MinimapPoint[]`
+drawn as small blue (`#3fa9f5`, the same color as the in-world ally
+triangle) dots, and `gems: MinimapPoint[]` drawn as small cyan (`#5fe0ff`,
+matching the in-world gem diamond) dots — both drawn before the enemy blip
+loop so an overlapping enemy blip still reads on top. `game.ts`'s call site
+gathers both the same way it already gathers `MinimapEnemy[]`: a `.filter()`
++ `.map()` over `this.entities` for `kind === 'ally' && !dead` and
+`kind === 'coin' && isGem && !dead` respectively.
+
+**Verified live**: screenshot with one F6-spawned enemy, one manually-pushed
+summoned ally, and one manually-pushed gem all visible simultaneously on the
+170x170 minimap in their respective distinct colors.
+
+### 5. Ally idle-drift target split: player-summoned vs spawner-made
+
+`entities/context.ts::WorldContext` gained two new required fields,
+`playerX`/`playerY` — the simplest way to give `updateAlly()` live access to
+the player's position without pulling in the full player `Entity` or a grid
+lookup (matches the "thread it through the same way other systems get
+player access" instruction; `game.ts`'s `ctx` object, built fresh every tick
+in `simulate()`, now includes `playerX: this.player.x, playerY: this.player.y`
+alongside its existing fields). `enemy.ts`'s behavior already receives the
+core `Entity` directly as a separate function argument and didn't need any
+change.
+
+`entities/behaviors/ally.ts`'s idle-state Brownian-walk logic: the only
+change is where `homeX`/`homeY` (formerly a hardcoded `CORE.x`/`CORE.y`)
+comes from — `e.summonedByPlayer ? [ctx.playerX, ctx.playerY] : [CORE.x,
+CORE.y]`. Every other part of the mechanic (random-accel nudge, clamp to
+`idleMaxSpeed`, soft-bound bias boost past `idleSoftBoundRadius`) is
+untouched and reads the live player position fresh every tick (no snapshot
+staleness) since `ctx` is rebuilt every `simulate()` call.
+
+**Verified live** two ways: (1) in the running game, pushed one summoned and
+one spawner ally near the player, drove the player ~300 units away over
+1.5s, and watched positions after — inconclusive on its own since the
+random-walk component dominates over a few seconds (by design: the home
+bias is deliberately weak per round 5). (2) A clean isolated unit-test-style
+check: called `updateAlly()` directly for 200 ticks (dt=0.1) with
+`Math.random` monkeypatched to return 0 (removing all randomness, isolating
+pure bias-driven motion) and a "player" fixed far from CORE — the summoned
+ally moved in a dead-straight line toward the player's exact position
+(ending exactly on the player's y and having covered exactly
+`idleMaxSpeed * elapsed` = 70*20 = 1400 units of x, landing at x=2400 as
+expected), while the spawner ally moved in a dead-straight line toward
+CORE's exact bearing (`atan2(3580,1400) = 68.6°`, matching its measured
+displacement angle to within floating-point precision). This cleanly
+confirms the split is implemented correctly, independent of the noisy
+random-walk component.
+
+### 6. Music: louder + a genuinely different composition
+
+`audio/music.ts`: `BASE_VOLUME` raised from 0.16 to **0.42** (~2.6x) — the
+explicit "much louder" ask, landing clearly as the dominant ambient layer
+while staying under SFX's `masterGain` (0.5 in `sfx.ts`) so per-shot/per-hit
+SFX still read on top rather than being buried (SFX operates as discrete
+transient spikes over the continuous music bed, so "under the SFX ceiling"
+still leaves plenty of headroom for gunfire to cut through even at 0.42).
+`INTENSE_VOLUME` (the boss-mode additive layer) scaled up alongside it,
+0.09 -> 0.22, to stay proportionate.
+
+New composition, not just a volume change:
+  - `LOOP_SECONDS` moved from 8 to 12, restructured as 4 bars of 3s each.
+  - Replaced the old single continuous sub-drone (kept, same trick, still
+    two integer-cycle sines for a click-free loop) + one-note-per-second
+    sparse bassline + straight-eighths ascending arpeggio, with: the same
+    sub-drone (now at LOOP_SECONDS=12-compatible integer-cycle frequencies,
+    110Hz/55Hz still both exact), a **driving 8th-note bass pulse** (2
+    hits/sec, sawtooth) that **walks a 4-chord minor progression**
+    (Am-F-C-G, i.e. `CHORD_ROOTS = [110, 87.31, 130.81, 98]`) one chord per
+    bar, a **sustained triangle-wave chord pad** (root+third+fifth held per
+    bar) giving real harmonic movement the old loop never had (it only ever
+    sounded one note at a time), and a **syncopated square-wave lead riff**
+    on an irregular beat-offset table (`LEAD_STEP_TIMES`) instead of the old
+    perfectly-even every-2-seconds arpeggio. The chord progression, the
+    added chord-pad harmony, the doubled tempo, and the syncopated (rather
+    than metronomic) lead rhythm are all genuinely different compositional
+    choices, not a re-skin of the same loop — the intent was for a human
+    listener to immediately hear it as a different piece, not "the same
+    ambient drone, just louder."
+  - The seamless-loop mechanism (render into an `OfflineAudioContext`
+    buffer, play back via a looping `AudioBufferSourceNode`) and the
+    boss-mode "intense" layer / mute toggle are all unchanged in mechanism,
+    only in the numbers that scale with the new `LOOP_SECONDS`.
+
+**Not verifiable in this environment**: how the new loop actually *sounds*
+— no audio output exists here (same caveat as round 5). This is explicitly
+flagged for the user's own playtest, along with "does Hell actually feel
+hellish."
+
+### Verification summary for this round
+
+- `npx tsc --noEmit` and `npm run build` both pass clean.
+- Full Playwright smoke suite against `npm run dev` (real Chromium): zero
+  console errors/pageerrors across every scenario below.
+- Difficulty selector: screenshot confirms Hell's near-black swatch is
+  legible and correctly highlighted when selected via keyboard; F6-spawned
+  grunt HP and `spawnDirector.effectiveAliveCap` both matched the exact
+  Hell multipliers (75 HP = 30*2.5; 162 cap = 90*1.8).
+- Wave-end gating: `waveManager.phase` stayed `'running'` with the timer and
+  spawn-cutoff both expired while one enemy was alive; transitioned to
+  `'intermission'` the tick after that enemy died. HUD's "Clearing remaining
+  enemies..." label confirmed rendering under these exact conditions via
+  screenshot; "Spawning ends in: m:ss" confirmed for the normal countdown
+  case, and the top-right difficulty swatch/label confirmed rendering
+  correctly for both Normal (yellow) and Very Hard (red) in separate runs.
+- Coins: confirmed unconditional long-range homing (a coin 2000 units away
+  moved ~325 units toward the player in 0.5s); gems confirmed to NOT move at
+  all under the identical setup (pixel-identical position after 0.5s).
+- Minimap: ally (blue) and gem (cyan) blips both confirmed rendering
+  alongside the existing enemy blip in one screenshot.
+- Ally idle-drift split: confirmed via a randomness-eliminated isolated
+  replay of `updateAlly()` that a summoned ally's pure home-bias motion
+  points exactly at a moving "player" position while a spawner ally's points
+  exactly at CORE's bearing — removes the round-5 random-walk noise that
+  would otherwise make this hard to observe over a short window.
+- Regression check: music mute toggle (`KeyM`) still flips `isMusicMuted()`
+  correctly after all of the above changes.
+- **Not verifiable in this environment / needs a human**: how the new music
+  loop sounds (louder + different composition — the explicit ask was purely
+  subjective and there's no audio output here); whether Hell actually feels
+  appropriately brutal and Easy appropriately forgiving over a real multi-
+  wave playthrough rather than the single-spawn spot-checks done here;
+  whether waiting out the last 1-3 stragglers of a wave (especially a kiting
+  archer) after spawning has stopped feels like satisfying "finish the job"
+  tension or occasionally like tedious mop-up, particularly on Hell where
+  `aliveCap` is raised to 162 and more stragglers can be left at the tail;
+  whether the new coin-magnet-from-anywhere speed (650) feels right at
+  actual play distances rather than the synthetic 2000-unit test case used
+  here.
