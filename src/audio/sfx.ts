@@ -141,6 +141,15 @@ export function initAudio(): void {
   if (c && c.state === 'suspended') c.resume().catch(() => {});
 }
 
+/**
+ * Exposes the shared AudioContext (creating it if needed) so other audio
+ * modules — e.g. audio/music.ts — mix into the same context/clock instead
+ * of opening a second one. Returns null if Web Audio isn't available.
+ */
+export function getSharedAudioContext(): AudioContext | null {
+  return getCtx();
+}
+
 function getNoiseBuffer(c: AudioContext): AudioBuffer {
   if (!noiseBuffer) {
     const len = c.sampleRate; // 1s of white noise, reused (sliced via stop time) for every noise layer

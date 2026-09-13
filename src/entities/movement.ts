@@ -1,9 +1,46 @@
 import type { SpatialGrid } from '../engine/grid.ts';
-import { WORLD } from '../config.ts';
+import { STEER_NOISE, WORLD } from '../config.ts';
 import { clamp } from '../engine/vec.ts';
 import { WALL_SEGMENTS } from '../world/map.ts';
 import type { Obstacle } from '../world/obstacles.ts';
 import type { Entity } from './types.ts';
+
+// Shared steering-noise utility: gives an entity a persistent, slowly
+// drifting angle offset (a smoothed random walk, re-targeted periodically
+// and eased toward continuously — cheap, no real Perlin noise needed) and
+// rotates a "move directly toward X" vector by it. Used for enemy chase/
+// toCore and ally advance so units converging on one point/direction fan
+// out a little instead of forming a single-file line — see config.ts
+// STEER_NOISE and DECISIONS.md round 5. NOT used for archer kite-distance
+// math or contact-range resolution, so combat precision is untouched.
+const maxAngle = (STEER_NOISE.maxAngleDeg * Math.PI) / 180;
+
+/**
+ * Advances entity `e`'s persistent steering-noise angle by one tick and
+ * returns { dx, dy } — the input unit vector (dx,dy) rotated by that noise
+ * angle. Call once per tick per entity that wants noisy "move toward"
+ * heading; pass the already-normalized (or any) direction vector.
+ */
+export function applySteeringNoise(e: Entity, dx: number, dy: number, dt: number): { x: number; y: number } {
+  if (e.steerNoiseTarget === undefined || Math.random() < dt * 0.3) {
+    // Occasionally re-roll the target angle the smoothed walk eases toward,
+    // so the wander direction itself drifts over time instead of just
+    // orbiting a fixed offset.
+    e.steerNoiseTarget = (Math.random() * 2 - 1) * maxAngle;
+  }
+  const current = e.steerNoiseAngle ?? 0;
+  const target = e.steerNoiseTarget;
+  const maxStep = STEER_NOISE.changeRatePerSecond * dt;
+  let diff = target - current;
+  if (diff > maxStep) diff = maxStep;
+  else if (diff < -maxStep) diff = -maxStep;
+  const angle = current + diff;
+  e.steerNoiseAngle = angle;
+
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  return { x: dx * cos - dy * sin, y: dx * sin + dy * cos };
+}
 
 // Integrates movement for player/ally/enemy entities, then layers local
 // avoidance on top of whatever behavior code set as the desired velocity:

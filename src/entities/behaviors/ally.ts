@@ -1,6 +1,7 @@
 import { ALLY, CORE } from '../../config.ts';
 import { tryMeleeAttack } from '../../combat/weapons.ts';
 import type { WorldContext } from '../context.ts';
+import { applySteeringNoise } from '../movement.ts';
 import { findNearest } from '../targeting.ts';
 import type { Entity } from '../types.ts';
 
@@ -10,11 +11,10 @@ import type { Entity } from '../types.ts';
 //
 // Engagement range comes from `e.aggroRadius` (== ALLY.aggroRadius), named
 // to match the enemy faction's `aggroRadius` so the concept reads the same
-// on both sides. When nothing is within that range, allies used to beeline
-// toward the globally-nearest enemy anywhere on the map (a suicide run away
-// from base); instead they now leash to the base: walk back if they've
-// wandered past ALLY.leashRadius from the core, or idle (a light wander
-// within ALLY.idleWanderRadius) once they're already home.
+// on both sides. When nothing is within that range, allies idle via a
+// biased Brownian motion (random-walk velocity with a small constant
+// homeward bias) rather than the old hard "beeline home past a leash
+// radius / idle in place otherwise" split — see DECISIONS.md round 5.
 export function updateAlly(e: Entity, ctx: WorldContext): void {
   if (!e.ai) return;
 
@@ -37,55 +37,51 @@ export function updateAlly(e: Entity, ctx: WorldContext): void {
     } else {
       e.ai.state = 'advance';
       const inv = 1 / (dist || 1);
-      e.vx = dx * inv * speed;
-      e.vy = dy * inv * speed;
-      e.angle = Math.atan2(dy, dx);
+      const noisy = applySteeringNoise(e, dx * inv, dy * inv, ctx.dt);
+      e.vx = noisy.x * speed;
+      e.vy = noisy.y * speed;
+      e.angle = Math.atan2(noisy.y, noisy.x);
     }
     return;
   }
 
-  // Nothing to fight in range — leash to the base instead of hunting
-  // map-wide. CORE is used as the "home" reference point (allies spawn from
-  // spawners near it, or are player-summoned nearby).
+  // Nothing to fight in range: biased-random-walk idle. Each tick, nudge a
+  // persistent idle velocity (e.ai.idleVx/idleVy) by a small random
+  // acceleration, clamp it to idleMaxSpeed, and add a small constant
+  // homeward acceleration toward CORE — much weaker than the random
+  // component so it reads as "wandering, but drifting home over time"
+  // rather than ever walking a straight line to base. Beyond
+  // idleSoftBoundRadius the homeward bias scales up (a soft leash) instead
+  // of snapping to a direct beeline.
+  e.ai.state = 'idle';
+  let ivx = e.ai.idleVx ?? 0;
+  let ivy = e.ai.idleVy ?? 0;
+
+  const randAngle = Math.random() * Math.PI * 2;
+  const randAccel = Math.random() * ALLY.idleRandomAccel;
+  ivx += Math.cos(randAngle) * randAccel * ctx.dt;
+  ivy += Math.sin(randAngle) * randAccel * ctx.dt;
+
   const hdx = CORE.x - e.x;
   const hdy = CORE.y - e.y;
-  const homeDist = Math.hypot(hdx, hdy);
+  const homeDist = Math.hypot(hdx, hdy) || 1;
+  let biasAccel = ALLY.idleHomeBiasAccel;
+  if (homeDist > ALLY.idleSoftBoundRadius) {
+    biasAccel *= 1 + (homeDist - ALLY.idleSoftBoundRadius) * ALLY.idleHomeBiasBoostPerUnit;
+  }
+  ivx += (hdx / homeDist) * biasAccel * ctx.dt;
+  ivy += (hdy / homeDist) * biasAccel * ctx.dt;
 
-  if (homeDist > ALLY.leashRadius) {
-    e.ai.state = 'returnToBase';
-    const inv = 1 / (homeDist || 1);
-    e.vx = hdx * inv * speed;
-    e.vy = hdy * inv * speed;
-    e.angle = Math.atan2(hdy, hdx);
-    return;
+  const ispeed = Math.hypot(ivx, ivy);
+  if (ispeed > ALLY.idleMaxSpeed) {
+    const scale = ALLY.idleMaxSpeed / ispeed;
+    ivx *= scale;
+    ivy *= scale;
   }
+  e.ai.idleVx = ivx;
+  e.ai.idleVy = ivy;
 
-  // Home with nothing to do: idle, with a light wander so a cluster of
-  // allies doesn't look like frozen statues. Re-picks a nearby wander point
-  // every couple of seconds (facingRefreshTimer doubles as that timer here,
-  // same field the kiter enemy uses for its own re-pick cadence).
-  e.ai.state = 'idle';
-  e.ai.facingRefreshTimer -= ctx.dt;
-  if (e.ai.facingRefreshTimer <= 0 || e.ai.wanderX === undefined) {
-    const angle = Math.random() * Math.PI * 2;
-    const r = Math.random() * ALLY.idleWanderRadius;
-    e.ai.wanderX = e.x + Math.cos(angle) * r;
-    e.ai.wanderY = e.y + Math.sin(angle) * r;
-    e.ai.facingRefreshTimer = 2 + Math.random() * 2;
-  }
-  const wx = e.ai.wanderX ?? e.x;
-  const wy = e.ai.wanderY ?? e.y;
-  const wdx = wx - e.x;
-  const wdy = wy - e.y;
-  const wdist = Math.hypot(wdx, wdy);
-  if (wdist > 6) {
-    const inv = 1 / wdist;
-    // Slow amble, not a full-speed run, while idling.
-    e.vx = wdx * inv * speed * 0.25;
-    e.vy = wdy * inv * speed * 0.25;
-    e.angle = Math.atan2(wdy, wdx);
-  } else {
-    e.vx = 0;
-    e.vy = 0;
-  }
+  e.vx = ivx;
+  e.vy = ivy;
+  if (ispeed > 1) e.angle = Math.atan2(ivy, ivx);
 }

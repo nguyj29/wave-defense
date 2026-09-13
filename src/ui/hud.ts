@@ -21,6 +21,13 @@ export interface HudData {
   bossMaxHp: number;
   shopPromptVisible: boolean;
   godMode: boolean;
+  musicMuted: boolean;
+  // Inventory slot bar (bottom-right, see drawInventorySlots): which of the
+  // 3 equippable slots is active, plus enough per-slot state to draw a
+  // small progress sliver (rifle reload, wand cooldown sweep).
+  activeSlot: 1 | 2 | 3;
+  rifleReloadPct: number; // 0..1, 1 = fully loaded/no reload in progress
+  wandCooldownPct: number; // 0..1, 1 = ready
 }
 
 function fmtTime(t: number): string {
@@ -44,8 +51,82 @@ function drawBar(ctx: CanvasRenderingContext2D, x: number, y: number, w: number,
   ctx.fillText(label, x + 6, y + h / 2);
 }
 
+// One entry per equippable slot, in display order — shape-based icon plus
+// label, matching the existing HUD's flat-color/bordered-box visual
+// language (see drawBar above) rather than introducing real art assets.
+const SLOTS: { slot: 1 | 2 | 3; label: string; color: string }[] = [
+  { slot: 1, label: '1', color: '#5ec9c0' }, // rifle
+  { slot: 2, label: '2', color: '#c3a15e' }, // pistol
+  { slot: 3, label: '3', color: '#c39bd3' }, // summon wand
+];
+
+/** 3-slot weapon/wand inventory bar, bottom-right, with the active slot outlined and a small per-slot readiness sliver. */
+function drawInventorySlots(ctx: CanvasRenderingContext2D, screenW: number, screenH: number, d: HudData): void {
+  const size = 44;
+  const gap = 8;
+  const totalW = SLOTS.length * size + (SLOTS.length - 1) * gap;
+  const startX = screenW - 16 - totalW;
+  const y = screenH - 56 - size - 22; // stacked above the ammo/summon-cooldown row
+
+  for (let i = 0; i < SLOTS.length; i++) {
+    const s = SLOTS[i];
+    const x = startX + i * (size + gap);
+    const active = d.activeSlot === s.slot;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(x, y, size, size);
+
+    // Icon: a simple shape per slot so it's readable without text —
+    // rifle: horizontal bar, pistol: small block, wand: diamond.
+    ctx.fillStyle = s.color;
+    const cx = x + size / 2;
+    const cy = y + size / 2;
+    if (s.slot === 1) {
+      ctx.fillRect(x + 8, cy - 4, size - 16, 8);
+    } else if (s.slot === 2) {
+      ctx.fillRect(cx - 8, cy - 10, 16, 20);
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - 14);
+      ctx.lineTo(cx + 12, cy);
+      ctx.lineTo(cx, cy + 14);
+      ctx.lineTo(cx - 12, cy);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Readiness sliver along the bottom edge: rifle reload progress, wand
+    // cooldown sweep. Pistol has no cooldown to show (infinite ammo).
+    const pct = s.slot === 1 ? d.rifleReloadPct : s.slot === 3 ? d.wandCooldownPct : 1;
+    if (pct < 1) {
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.fillRect(x, y + size - 4, size, 4);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(x, y + size - 4, size * Math.max(0, Math.min(1, pct)), 4);
+    }
+
+    ctx.strokeStyle = active ? '#ffffff' : 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = active ? 3 : 1;
+    ctx.strokeRect(x, y, size, size);
+
+    ctx.fillStyle = active ? '#ffffff' : 'rgba(255,255,255,0.7)';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(s.label, x + 4, y + 13);
+  }
+}
+
 export function drawHud(ctx: CanvasRenderingContext2D, screenW: number, screenH: number, d: HudData): void {
   ctx.save();
+
+  drawInventorySlots(ctx, screenW, screenH, d);
+
+  // Music mute indicator, small and out of the way (top-right).
+  ctx.textAlign = 'right';
+  ctx.font = '12px sans-serif';
+  ctx.fillStyle = d.musicMuted ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.8)';
+  ctx.fillText(d.musicMuted ? '♪ off (M)' : '♪ on (M)', screenW - 16, 16);
 
   // Player HP (bottom-left)
   drawBar(ctx, 16, screenH - 56, 220, 22, d.playerHp / d.playerMaxHp, '#5ec96a', `HP ${Math.ceil(d.playerHp)}/${d.playerMaxHp}`);

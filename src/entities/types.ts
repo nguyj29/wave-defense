@@ -41,7 +41,7 @@ export interface RangedAttack {
   kiteDistance?: number;
 }
 
-export type AllyBehaviorState = 'advance' | 'attack' | 'returnToBase' | 'idle';
+export type AllyBehaviorState = 'advance' | 'attack' | 'idle';
 export type EnemyBehaviorState = 'toCore' | 'chase' | 'attack' | 'kite' | 'strafe';
 
 export interface AiState {
@@ -49,10 +49,11 @@ export interface AiState {
   targetId: number | null;
   strafeDir: number; // +-1, used by kiters
   facingRefreshTimer: number;
-  // Idle-wander target (allies only, 'idle' state) — reused as a re-pick
-  // timer via facingRefreshTimer above.
-  wanderX?: number;
-  wanderY?: number;
+  // Idle biased-Brownian-motion velocity (allies only, 'idle' state) —
+  // persists across ticks so the random walk is continuous rather than
+  // re-rolled every frame. See entities/behaviors/ally.ts.
+  idleVx?: number;
+  idleVy?: number;
 }
 
 export interface ProjectileData {
@@ -106,6 +107,14 @@ export interface Entity {
   coinsMax?: number;
   alpha?: number; // render-only opacity multiplier (e.g. a projectile fading out after it stops)
   barrelPullback?: number; // player-only: current recoil pullback of the aim-direction barrel line, in world units
+  // Shared steering-noise state (see entities/movement.ts::applySteeringNoise):
+  // a persistent, slowly-drifting angle offset applied to "move directly
+  // toward a distant target/core" vectors so converging units fan out a
+  // little instead of single-filing. steerNoiseAngle is the current offset
+  // (radians); steerNoiseTarget is the smoothed-random-walk target it eases
+  // toward each tick.
+  steerNoiseAngle?: number;
+  steerNoiseTarget?: number;
 }
 
 let nextId = 1;

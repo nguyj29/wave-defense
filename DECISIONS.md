@@ -907,6 +907,265 @@ than an exception breaking gameplay.
   real multi-wave playthrough rather than just the arithmetic sanity check
   above.
 
+## Ally Brownian idle, maze lanes, bigger map, music, less recoil, inventory HUD, movement noise (post-MVP pass 5)
+
+Seven independent items in one round; each gets its own subsection with the
+exact numbers chosen and how it was verified.
+
+### 1. Ally idle -> biased Brownian motion
+
+Removed `returnToBase` entirely (`entities/types.ts::AllyBehaviorState` no
+longer has it) along with `ALLY.leashRadius`/`idleWanderRadius` and the old
+`e.ai.wanderX/wanderY` re-pick-every-2-4s fields. `entities/behaviors/
+ally.ts`'s no-target branch is now a single continuous random walk on a
+persistent `e.ai.idleVx/idleVy` velocity:
+
+- Each tick: a random-direction acceleration of magnitude
+  `Math.random() * ALLY.idleRandomAccel` (`idleRandomAccel: 260` units/s^2)
+  is added to the idle velocity.
+- A constant homeward acceleration `ALLY.idleHomeBiasAccel = 14` units/s^2
+  (~5.4% of the random component's *max* magnitude, and idling allies rarely
+  sit at that max) is added toward `CORE`, so the walk drifts home on
+  average without ever being a computed "walk to base" vector.
+- The combined velocity is clamped to `ALLY.idleMaxSpeed = 70` units/s
+  (35% of `ALLY.speed`, so idling still reads as ambling, not sprinting).
+- Soft leash: beyond `ALLY.idleSoftBoundRadius = 900` from `CORE`, the bias
+  accel scales up via `1 + (distPastBound) * ALLY.idleHomeBiasBoostPerUnit`
+  (`idleHomeBiasBoostPerUnit: 0.05`, so 100 units past the bound already
+  doubles the pull) — a strengthening pull, never a snap to a beeline state.
+
+Picked `idleRandomAccel`/`idleHomeBiasAccel`/`idleMaxSpeed` by feel from the
+old `idleWanderRadius: 60` (a wander that used to stay within a 60-unit
+radius) — the new numbers keep a similar "ambling near home" footprint in
+the common case while giving it unpredictable structure. **This is the one
+change in this round most in need of a human playtest**: "does the wander
+feel pleasant / not-jittery / not-too-far-ranging" is a felt quality no
+position sample can fully validate. See Verification below for what was
+actually observed live (net drift direction *not* monotonic over a 5-second
+sample — expected for a Brownian walk with a small bias, but worth a
+longer real-time look).
+
+### 2. Orthogonal, maze-like lanes
+
+`world/map.ts`: replaced the one-diagonal-segment-per-spawn-point
+`LANE_SEGMENTS` with `buildLanePath()`, a pure function of (spawn point,
+gap center) that emits a chain of up to 5 strictly axis-aligned segments:
+straight down -> jog sideways onto a midpoint x (offset by a new
+`LANE_MAZE.sidewaysJog: 220` so even the top-middle spawn point, whose x
+already equals its gap's x, still gets two real turns instead of one
+unbroken vertical line) -> straight down again -> jog onto the gap's exact
+x -> straight down into the gap. Turn rows are at `LANE_MAZE
+.firstTurnFraction: 0.45` / `secondTurnFraction: 0.75` of the vertical drop.
+Jog direction alternates per lane (`jogSign`) so the three lanes' zig-zags
+don't all lean the same way.
+
+`LANE_SEGMENTS` is kept as the flattened list of every segment across every
+lane's path (`LANE_PATHS.flat()`) — same shape as before (an array of
+`{x1,y1,x2,y2,width}`), so `world/obstacles.ts`'s lane-exclusion check and
+both `render/renderer.ts::drawLanes` and the obstacle/lane drawing needed
+**zero code changes**: they already iterate every element of
+`LANE_SEGMENTS`, and there are just more elements now. `LANE_PATHS` (the
+per-spawn-point grouping) is exported too in case a future pass wants
+per-lane logic (e.g. a lane-specific enemy formation).
+
+### 3. Bigger map (3200 -> 4800) + cellSize (32 -> 40)
+
+`WORLD.width/height`: 3200 -> **4800** (2.25x area). Everything derived from
+world size scales with it automatically (`CORE`, `SHOP` are formulas off
+`WORLD`/`CORE`), and these were scaled explicitly:
+- `BASE.wallSetback` 260->390, `wallHalfSpan` 750->1125, `gapOffsets`
+  ±400/0 -> ±600/0 (all 1.5x, the *linear* dimension ratio).
+- `SPAWN_EDGE_MARGIN` (map.ts) 80->120, `SPAWN_POINT_CLEAR_RADIUS` 160->240
+  (1.5x).
+- `OBSTACLES.treeCount` 46->104, `rockCountMin` 16->36 (2.25x, the *area*
+  ratio, so density per unit area is unchanged rather than the map reading
+  emptier); `patchCount`/`patchRadius` scaled 1.5x (9/630) since those are
+  more about clump *size* than raw count.
+
+**cellSize 32 -> 40**, specifically to keep the flow-field's cell count
+(and thus its one-time Dijkstra recompute cost at level load) from growing
+by the full 2.25x area ratio. Measured with a standalone harness
+replicating `world/flowfield.ts::FlowField.recompute()`'s exact algorithm
+(same Dijkstra + blocked-cell classification, run outside the browser in
+Node so timing isn't muddied by first-load JIT warmup) at similar
+obstacle counts:
+
+| Config | Cols x Rows | Cells | Recompute (3 runs) |
+|---|---|---|---|
+| Old: 3200x3200, cellSize 32, ~140 obstacles | 100x100 | 10,000 | 54ms / 80ms / 78ms |
+| **New: 4800x4800, cellSize 40, ~330 obstacles** | 120x120 | 14,400 | **26ms / 22ms / 31ms** |
+| Alternative not taken: 4800x4800, cellSize 32, ~330 obstacles | 150x150 | 22,500 | 59ms / 44ms / 42ms |
+
+All three are comfortably one-time-cost territory (well under a second), so
+this wasn't a "had to" fix — but the chosen 40 actually recomputes *faster*
+than the old 3200-map baseline despite the bigger world, because the
+obstacle-count-dominated blocked-cell classification pass (`O(cells x
+obstacles)`) is the actual bottleneck here, not the Dijkstra itself, and
+40's smaller cell count keeps that pass cheap. Went with cellSize 40 over
+keeping 32 for exactly that reason: same "not a problem either way" recompute
+budget, but a visibly better number, at the cost of slightly coarser flow-
+field granularity (40-unit cells vs 32) — imperceptible at the unit
+radii (12-45) and speeds (70-200 units/s) involved. `engine/grid.ts`'s
+`SpatialGrid` needed no changes: it's a `Map<string, T[]>` keyed by cell
+coordinate, so it costs nothing for a bigger, sparser world — occupied
+cells is what matters, not the theoretical cell count over the whole map.
+
+### 4. Background music
+
+New `src/audio/music.ts`, following `audio/sfx.ts`'s "pure Web Audio
+synthesis, no external files" rule. Approach: pre-render one `LOOP_SECONDS
+= 8` second loop into an `AudioBuffer` via `OfflineAudioContext` (a
+continuous two-oscillator drone at 55Hz/110Hz — chosen because 55*8=440 and
+110*8=880 are both whole numbers of cycles, so the waveform's phase at the
+loop's end exactly matches its phase at the start, giving a genuinely
+click-free loop with no crossfade needed — plus a sparse one-note-per-second
+triangle bassline cycling `BASS_NOTES` and a half-density sine arpeggio
+`ARP_NOTES` an octave up, both with envelopes that fully decay before the
+loop wraps), then play it back via a real `AudioBufferSourceNode` with
+`loop = true`. A second "intense" buffer (same 8s length, same start time)
+adds a soft filtered-noise tick every half-second; it's mixed in via a
+separate always-present `intenseGain` node ramped 0 <-> `INTENSE_VOLUME`
+(0.09) from `setMusicIntensity()`, called from `game.ts` on
+boss-warning/boss-alive state changes — cheap (a gain ramp on an
+already-running, phase-locked second source), and optional per the brief
+("a single good static loop is an acceptable MVP") so it was kept
+deliberately minimal rather than building a full layered arrangement.
+
+Mix levels: `BASE_VOLUME = 0.16` against `sfx.ts`'s `masterGain = 0.5` —
+roughly a third of the SFX bus's headroom, chosen so gunfire/hits/UI sounds
+stay clearly on top per the brief. `initMusic()` hooks the exact same
+first-user-gesture call sites as `sfx.ts::initAudio()` (`input.ts`'s
+keydown/mousedown handlers) since both need the same autoplay-policy
+unlock. Mute: `KeyM` toggles `toggleMusicMute()` (a 0.15s gain ramp, not an
+instant cut, so it doesn't click), with a small always-visible "♪ on/off
+(M)" indicator added to the HUD's top-right (`ui/hud.ts::drawHud`) — picked
+over a debug-overlay-only indicator since debug overlay is F9-gated and
+off by default, and the user should be able to see/toggle music state
+without enabling debug tools.
+
+**Explicitly not verifiable by this session**: whether the loop actually
+sounds "pleasant" — no audio output exists in this environment. What *was*
+verified: `OfflineAudioContext` rendering completes and the resulting
+`AudioBufferSourceNode` starts without throwing (a Playwright smoke run
+that clicks the canvas — the real user-gesture path — produced zero
+console/page errors), the mute toggle flips the HUD indicator and (by code
+inspection) ramps `musicGain` to 0, and the boss-intensity hook fires
+without error when `spawnDirector.bossWarningActive` changes. The
+composition itself (note choices, tempo, whether the drone/bass/arp balance
+sits right against gunfire) needs a human ear — flagged as the top
+"needs playtest" item alongside the Brownian-motion feel.
+
+### 5. Recoil reduced ~1/3 (rifle) and 1/2 (pistol)
+
+`WEAPONS.rifle`: `recoilCamera` 14->4.7, `recoilBarrel` 10->3.3 (divide by
+~3). `WEAPONS.pistol`: `recoilCamera` 6->3, `recoilBarrel` 5->2.5 (divide by
+2). Different factors because the rifle fires 10 shots/s (fully-automatic)
+so successive kicks compound in the ~60ms between shots — even at 1/3
+strength the sustained-fire feel is still present — while the pistol's 3
+shots/s (single, deliberate presses in practice) never really compounds, so
+a milder 1/2 cut keeps its kick still felt without over-correcting.
+`RECOIL.decayPerSecond` (16, exponential ease-back) was left untouched:
+the decay is a *rate*, not tied to the recoil's peak magnitude — an
+exponential decay to neutral takes the same *time* to fall to any given
+fraction of its starting amplitude regardless of what that starting
+amplitude is, so halving/thirding the peak doesn't by itself desync the
+decay feel. On inspection post-change the two still read as consistent
+(quick snap, same-speed ease-back, just a smaller kick), so no decay
+adjustment was made. Verified live: fired the rifle continuously for 1.5s
+in the Playwright smoke run (ammo counter ticked down correctly, 30->17
+rounds) with zero console/page errors; the *felt* reduction in screen kick
+is, like the other feel-based items, something only a human playing can
+really confirm.
+
+### 6. Inventory slot HUD (bottom-right)
+
+`ui/hud.ts`: added `drawInventorySlots()`, a row of 3 44px boxes (matching
+the flat-fill/bordered-box visual language `drawBar` already uses)
+positioned above the existing ammo/summon-cooldown row, bottom-right. Each
+slot gets a simple shape icon so it reads without text — a horizontal bar
+for the rifle, a small block for the pistol, a diamond for the wand — plus
+its key number in the corner. The active slot (`d.activeSlot`, already
+tracked on `Game` for weapon switching) gets a thicker white border;
+inactive slots get a dim border. A thin readiness sliver along each slot's
+bottom edge shows rifle reload progress (`rifleReloadPct`, computed in
+`game.ts` from `playerWeaponState.reloadTimer`/`WEAPONS.rifle.reloadTime`)
+and wand cooldown (`wandCooldownPct`, from the existing
+`summonCooldownRemaining`/`summonCooldownSeconds()`) — the pistol has no
+sliver since it's infinite-ammo with no cooldown to show. Kept to the
+"clean static 3-slot bar with a highlight" scope the brief called the core
+ask; no drag-and-drop, no reordering, no extra chrome.
+
+Verified live: Playwright screenshots after pressing `Digit2` and `Digit3`
+show the white outline moving to the correct slot each time, with the
+weapon label/ammo text below updating in sync ("Pistol" / "unlimited",
+then "Summon Wand" / "Left-click to summon" with the cooldown sliver on
+slot 3 visibly partial after a summon had been cast).
+
+### 7. Shared steering-noise utility (movement variance)
+
+New `entities/movement.ts::applySteeringNoise(entity, dx, dy, dt)`: gives
+an entity a persistent angle offset (`Entity.steerNoiseAngle`, eased each
+tick toward a periodically-re-rolled `steerNoiseTarget` at
+`STEER_NOISE.changeRatePerSecond = 0.6` rad/s, clamped to
+±`STEER_NOISE.maxAngleDeg = 16`°) and rotates the given direction vector by
+it — a smoothed random walk on heading, cheap (no real Perlin noise
+needed) and stateful per-entity so it drifts continuously rather than
+jittering every frame. Wired into exactly the "move directly toward a
+distant point" call sites the brief named: `entities/behaviors/
+enemy.ts::moveToward()` (chase) and both melee/kiter `toCore` branches
+(the flow-field direction gets rotated before being applied), and
+`entities/behaviors/ally.ts`'s `advance` branch. **Not** applied to the
+kiter's kite/chase/strafe distance-maintenance math or to either faction's
+contact-range/attack resolution, per the brief, so combat precision is
+unaffected — those branches compute `dx/dy` and act on exact distance
+without ever calling `applySteeringNoise`.
+
+Picked 16° max / 0.6 rad/s change rate so the effect reads as "a few
+degrees of continuous wander" rather than visible spinning, and specifically
+small enough that a grunt still reliably threads a 120-unit-wide wall gap
+from a lane 180 units wide (16° of heading error over the last ~50 units of
+approach is a worst-case ~14-unit lateral miss, well inside the gap's
+margin). Verified live via a Playwright sample of `toCore`-state enemies'
+actual velocity headings partway up a lane: enemies clustered in the same
+lane (~similar x/y) showed heading spreads of roughly 10-20° from each
+other rather than an identical heading, e.g. three enemies near x≈2380-2435
+in the top-middle lane read 92°/93°/102°, and three in the top-left lane
+read 72°/51°/70° — visibly fanned rather than perfectly overlapping, while
+still net-progressing down the correct lane toward the core.
+
+### Verification summary for this round
+
+- `npx tsc --noEmit` and `npm run build` both pass clean.
+- Playwright smoke run against `npm run dev` (real Chromium, installed via
+  `npx playwright install chromium --with-deps`): zero `console.error`/
+  `pageerror` across the full interaction sequence (start click, zoom,
+  movement, weapon switching x3, sustained rifle fire, music mute toggle).
+- **Confirmed live via screenshot**: orthogonal maze lanes with a real 90°
+  turn (not a diagonal) partway up a lane; `CORE.x/y` reading 2400/4580 at
+  runtime (matching the new `WORLD` 4800x4800 formula); the inventory HUD
+  rendering and its highlight moving correctly across all 3 slots; the
+  music-mute HUD indicator flipping "on"->"off" text on `KeyM`; rifle fire
+  running without error at the new lower recoil values.
+- **Confirmed live via `window.game` state sampling** (not just visual):
+  ally idle velocities/positions sampled every 0.8s over ~5s showing
+  non-monotonic position changes (wandering) rather than a straight line to
+  a target; `toCore`-state enemies' velocity headings showing 10-20°
+  spread between units in the same lane instead of identical headings.
+- **Not verifiable in this environment / needs a human**: how the music
+  loop actually *sounds* (composition/mix balance against gunfire) — no
+  audio output exists here; whether the ally Brownian-wander *feels* right
+  at normal play speed over a longer session than the ~5-20s samples taken
+  here (too aimless, too jittery, wanders too far before drifting back);
+  whether the reduced recoil feels adequately toned down without being
+  "no recoil at all"; and whether the new 4800x4800 map size / obstacle
+  density reads as appropriately "fuller" rather than too sparse or too
+  cluttered during actual multi-wave play with real enemy counts (this
+  pass didn't change `WAVES` enemy counts, so waves 1-5 spread over a
+  visibly bigger map — worth a real playtest to see if early waves now
+  feel too empty, in which case a future pass should consider bumping wave
+  1-2 grunt counts or trimming the map-size increase for a later wave-only
+  unlock).
+
 ## Acceptance-criteria verification note
 
 See the final chat report for which of the spec's 16 acceptance criteria

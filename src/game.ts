@@ -1,5 +1,5 @@
 import { Camera } from './camera.ts';
-import { ALLY, COINS, CORE, DEBUG, GEM, PLAYER, SHOP, SPAWN_DIRECTOR, SUMMON, WORLD } from './config.ts';
+import { ALLY, COINS, CORE, DEBUG, GEM, PLAYER, SHOP, SPAWN_DIRECTOR, SUMMON, WEAPONS, WORLD } from './config.ts';
 import { setGodMode, updateRegen } from './combat/damage.ts';
 import {
   createPlayerWeaponState,
@@ -55,6 +55,7 @@ import {
 } from './render/renderer.ts';
 import { drawEntityDetailed, drawObstaclesDetailed, drawWallsDetailed } from './render/rendererDetailed.ts';
 import { playSfx } from './audio/sfx.ts';
+import { isMusicMuted, setMusicIntensity, toggleMusicMute } from './audio/music.ts';
 import { FlowField, type Pathfinder } from './world/flowfield.ts';
 import { SPAWNER_POSITIONS } from './world/map.ts';
 import { generateObstacles, type Obstacle } from './world/obstacles.ts';
@@ -129,6 +130,7 @@ export class Game {
   private lastUpdateMs = 0;
   private lastRenderMs = 0;
   private deathHandled = new Set<number>();
+  private lastMusicIntense = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -294,6 +296,7 @@ export class Game {
     }
     if (input.wasPressed('Digit3')) this.activeSlot = 3;
     if (input.wasPressed('KeyR')) startReload(this.playerWeaponState, this.shopLevels);
+    if (input.wasPressed('KeyM')) toggleMusicMute();
 
     this.player.iframeTimer = Math.max(0, (this.player.iframeTimer ?? 0) - dt);
 
@@ -415,6 +418,16 @@ export class Game {
 
       if (this.spawnDirector.isBudgetExhausted && aliveEnemies === 0) {
         wm.timeRemaining = 0;
+      }
+
+      // Subtle music intensity bump during boss warning/an active boss —
+      // cheap gain-ramp layer on the already-running, phase-synced loop
+      // (see audio/music.ts). Only call on an actual state change so we
+      // aren't re-triggering the ramp every tick.
+      const bossActive = this.spawnDirector.bossWarningActive || this.entities.some((e) => e.kind === 'enemy' && e.isBoss && !e.dead);
+      if (bossActive !== this.lastMusicIntense) {
+        this.lastMusicIntense = bossActive;
+        setMusicIntensity(bossActive);
       }
     }
 
@@ -624,6 +637,13 @@ export class Game {
       bossMaxHp: boss?.health?.maxHp ?? 1,
       shopPromptVisible: this.phase === 'playing' && this.distToShopMarker() <= SHOP.interactRadius,
       godMode: this.debug.godMode,
+      musicMuted: isMusicMuted(),
+      activeSlot: this.activeSlot,
+      rifleReloadPct: this.playerWeaponState.reloading
+        ? 1 - this.playerWeaponState.reloadTimer / (WEAPONS.rifle.reloadTime ?? 1.5)
+        : 1,
+      wandCooldownPct:
+        summonCooldownSeconds(this.shopLevels) > 0 ? 1 - this.summonCooldownRemaining / summonCooldownSeconds(this.shopLevels) : 1,
     };
     drawHud(ctx, w, h, hudData);
     drawMinimap(

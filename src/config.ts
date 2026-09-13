@@ -5,26 +5,33 @@
 // ============================================================================
 
 export const WORLD = {
-  width: 3200,
-  height: 3200,
+  // Bumped from 3200x3200 for the eventual 25-wave game (see DECISIONS.md
+  // round 5 for the sizing/perf tradeoff) — a clear ~2.25x area increase.
+  width: 4800,
+  height: 4800,
   seed: 1337, // seeded RNG so obstacle layout is reproducible while tuning
-  cellSize: 32, // flow-field / spatial grid cell size
+  // Bumped from 32 alongside the world-size increase so the Dijkstra
+  // flow-field recompute's cell count (and thus its one-time cost at level
+  // load) doesn't grow by the full area ratio — see DECISIONS.md for
+  // measured recompute times before/after.
+  cellSize: 40,
 };
 
 export const OBSTACLES = {
-  // Reduced again for the bottom-middle-base map redesign (see DECISIONS.md):
-  // lanes now keep obstacle-free roads to the base, so overall density needed
-  // to drop further to still read as "open" rather than just "road + thicket".
-  treeCount: 46,
+  // Scaled up ~2.25x (the world area ratio: (4800/3200)^2) from the previous
+  // 46/16 so density per unit area stays roughly the same on the bigger map
+  // instead of reading emptier — see DECISIONS.md round 5.
+  treeCount: 104,
   treeRadius: 18,
-  rockCountMin: 16, // still enough cover near lanes for archer-kiting
+  rockCountMin: 36, // still enough cover near lanes for archer-kiting
   rockRadius: [24, 40] as [number, number],
   rockVertsRange: [6, 9] as [number, number],
   // Forest is placed in a handful of irregular patches off to the sides of
   // the lanes rather than uniformly across the map (see DECISIONS.md) —
-  // patchCount/patchRadius control how clumped it reads.
-  patchCount: 6,
-  patchRadius: 420,
+  // patchCount/patchRadius control how clumped it reads. Scaled by ~1.5x
+  // (linear dimension ratio) alongside the area-scaled counts above.
+  patchCount: 9,
+  patchRadius: 630,
   // Fraction of obstacles placed via pure uniform scatter (not clumped into
   // a patch) so the map doesn't look unnaturally polka-dotted.
   scatterFraction: 0.15,
@@ -48,14 +55,15 @@ export const BASE = {
   // world/map.ts for the derived geometry and DECISIONS.md for why.
   wallThickness: 24,
   gapWidth: 120,
-  // The north wall sits this far "in front of" (north of) the core.
-  wallSetback: 260,
+  // The north wall sits this far "in front of" (north of) the core. Scaled
+  // 1.5x alongside the world-size increase (see DECISIONS.md round 5).
+  wallSetback: 390,
   // The north wall spans CORE.x -/+ wallHalfSpan; side walls drop straight
-  // down from its two ends to the world's south edge.
-  wallHalfSpan: 750,
+  // down from its two ends to the world's south edge. Scaled 1.5x.
+  wallHalfSpan: 1125,
   // Gap centers, as offsets from CORE.x — one per active spawn point
-  // (top-left / top-middle / top-right), in that order.
-  gapOffsets: [-400, 0, 400] as number[],
+  // (top-left / top-middle / top-right), in that order. Scaled 1.5x.
+  gapOffsets: [-600, 0, 600] as number[],
   spawnerRadius: 24,
   spawnerCount: 2,
   spawnerOutputBase: 0.1, // spawns/s == 1 per 10s
@@ -76,6 +84,25 @@ export const SHOP = {
 // See world/map.ts (LANES) and DECISIONS.md.
 export const LANES = {
   width: 180,
+};
+
+// Maze-like Manhattan (axis-aligned only) lane geometry: each active spawn
+// point connects to the base via a short chain of horizontal/vertical
+// segments with one or two 90-degree turns, instead of one diagonal
+// straight line. Purely data — see world/map.ts::LANE_SEGMENTS for how this
+// is turned into concrete segment lists per spawn point, and DECISIONS.md
+// round 5 for why (no diagonal roads, a bit maze-like).
+export const LANE_MAZE = {
+  // Fraction of the vertical drop from a spawn point to the wall-gap row
+  // where each turn happens.
+  firstTurnFraction: 0.45,
+  secondTurnFraction: 0.75,
+  // A deliberate sideways jog applied at the path's midpoint even when the
+  // spawn point's x already matches its gap's x (e.g. top-middle) — without
+  // this, that lane would be a single straight vertical line with no turns
+  // at all. Alternates left/right per spawn point via buildLanePath's
+  // jogSign so it reads as a gentle zig-zag, not a big detour.
+  sidewaysJog: 220,
 };
 
 export const PLAYER = {
@@ -141,8 +168,12 @@ export const WEAPONS: Record<'rifle' | 'pistol', WeaponDef> = {
     magazineBase: 30,
     magazinePerLevel: 10,
     reloadTime: 1.5,
-    recoilCamera: 14,
-    recoilBarrel: 10,
+    // Reduced to ~1/3 of the original 14/10 (see DECISIONS.md round 5): the
+    // rifle's rapid fire rate (10 shots/s) compounds recoil far faster than
+    // the pistol's, so it gets the larger reduction of the two to keep
+    // sustained fire from feeling like uncontrollable screen-shake.
+    recoilCamera: 4.7,
+    recoilBarrel: 3.3,
   },
   pistol: {
     key: '2',
@@ -157,8 +188,12 @@ export const WEAPONS: Record<'rifle' | 'pistol', WeaponDef> = {
     spreadDeg: 0,
     bulletSpeed: 900,
     infiniteAmmo: true,
-    recoilCamera: 6,
-    recoilBarrel: 5,
+    // Reduced to 1/2 of the original 6/5 (see DECISIONS.md round 5): the
+    // pistol fires single, slower shots (3/s base), so compounding is much
+    // less of an issue than the rifle's — a milder cut keeps its kick still
+    // felt without needing the rifle's steeper reduction.
+    recoilCamera: 3,
+    recoilBarrel: 2.5,
   },
 };
 
@@ -197,17 +232,34 @@ export const ALLY = {
   // the concept is consistent across factions (see entities/types.ts,
   // Entity.aggroRadius, which both factions now populate).
   aggroRadius: 700,
-  // "Home" leash: when no enemy is within aggroRadius, an ally within this
-  // distance of the base (CORE) idles there instead of chasing; beyond it,
-  // the ally walks back toward the base instead of continuing whatever it
-  // was doing. Replaces the old unbounded map-wide chase fallback — see
-  // DECISIONS.md and entities/behaviors/ally.ts.
-  leashRadius: 500,
-  // Radius of the light idle wander around the ally's position once it's
-  // home with nothing to fight, so idling allies don't look like frozen
-  // statues.
-  idleWanderRadius: 60,
+  // Idle behavior (no enemy in range): biased Brownian motion instead of a
+  // hard leash-radius beeline/idle split — see DECISIONS.md round 5 and
+  // entities/behaviors/ally.ts. Each tick the idle velocity gets a small
+  // random nudge, is clamped to idleMaxSpeed, and has a small constant
+  // homeward bias added so allies net-drift toward CORE over time without
+  // ever computing a direct "walk to base" vector.
+  idleMaxSpeed: 70, // clamp on the wander velocity's magnitude, units/s
+  idleRandomAccel: 260, // units/s^2 of random-direction accel applied to idle velocity each tick
+  idleHomeBiasAccel: 14, // units/s^2 of constant accel toward CORE while inside idleSoftBoundRadius
+  // Soft outer bound: beyond this distance from CORE, the homeward bias
+  // strength scales up (see idleHomeBiasBoostPerUnit) instead of snapping to
+  // a hard "return to base" mode, so an ally that has wandered far still
+  // reads as biased-wandering-home rather than beelining.
+  idleSoftBoundRadius: 900,
+  idleHomeBiasBoostPerUnit: 0.05, // extra bias-accel multiplier per unit of distance past idleSoftBoundRadius
   color: '#3fa9f5',
+};
+
+// ---------------------------------------------------------------------------
+// Shared movement steering noise: a small, slowly-drifting per-entity angle
+// offset applied to "move directly toward a distant target/core" vectors
+// (enemy chase/toCore, ally advance) so multiple units converging on the
+// same point fan out a little instead of forming a single-file line. See
+// entities/movement.ts::applySteeringNoise and DECISIONS.md round 5.
+// ---------------------------------------------------------------------------
+export const STEER_NOISE = {
+  maxAngleDeg: 16, // clamp on the noise angle offset, degrees
+  changeRatePerSecond: 0.6, // how fast the smoothed random walk on the angle can move, radians/s at full swing
 };
 
 // ---------------------------------------------------------------------------

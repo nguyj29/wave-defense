@@ -1,6 +1,7 @@
 import { ENEMIES } from '../../config.ts';
 import { tryMeleeAttack, tryRangedAttack } from '../../combat/weapons.ts';
 import type { WorldContext } from '../context.ts';
+import { applySteeringNoise } from '../movement.ts';
 import { findNearest } from '../targeting.ts';
 import type { Entity } from '../types.ts';
 
@@ -17,13 +18,24 @@ export function updateEnemy(e: Entity, ctx: WorldContext, core: Entity): void {
   else updateMelee(e, ctx, core);
 }
 
-function moveToward(e: Entity, tx: number, ty: number, speed: number): void {
+// `noisy`: chase/toCore movement gets a small steering-noise perturbation
+// (see entities/movement.ts) so converging units fan out a bit; callers
+// that need exact heading (none currently pass false here, but kept
+// explicit) can opt out.
+function moveToward(e: Entity, tx: number, ty: number, speed: number, dt: number, noisy = true): void {
   const dx = tx - e.x;
   const dy = ty - e.y;
   const d = Math.hypot(dx, dy) || 1;
-  e.vx = (dx / d) * speed;
-  e.vy = (dy / d) * speed;
-  e.angle = Math.atan2(dy, dx);
+  let ux = dx / d;
+  let uy = dy / d;
+  if (noisy) {
+    const n = applySteeringNoise(e, ux, uy, dt);
+    ux = n.x;
+    uy = n.y;
+  }
+  e.vx = ux * speed;
+  e.vy = uy * speed;
+  e.angle = Math.atan2(uy, ux);
 }
 
 function updateMelee(e: Entity, ctx: WorldContext, core: Entity): void {
@@ -47,13 +59,14 @@ function updateMelee(e: Entity, ctx: WorldContext, core: Entity): void {
 
   if (target) {
     e.ai.state = 'chase';
-    moveToward(e, target.x, target.y, speed);
+    moveToward(e, target.x, target.y, speed, ctx.dt);
   } else {
     e.ai.state = 'toCore';
     const dir = ctx.pathfinder.getDirection(e.x, e.y);
-    e.vx = dir.x * speed;
-    e.vy = dir.y * speed;
-    if (dir.x !== 0 || dir.y !== 0) e.angle = Math.atan2(dir.y, dir.x);
+    const noisy = applySteeringNoise(e, dir.x, dir.y, ctx.dt);
+    e.vx = noisy.x * speed;
+    e.vy = noisy.y * speed;
+    if (noisy.x !== 0 || noisy.y !== 0) e.angle = Math.atan2(noisy.y, noisy.x);
   }
 }
 
@@ -84,9 +97,10 @@ function updateKiter(e: Entity, ctx: WorldContext, core: Entity): void {
     } else {
       e.ai.state = 'toCore';
       const dir = ctx.pathfinder.getDirection(e.x, e.y);
-      e.vx = dir.x * speed;
-      e.vy = dir.y * speed;
-      if (dir.x !== 0 || dir.y !== 0) e.angle = Math.atan2(dir.y, dir.x);
+      const noisy = applySteeringNoise(e, dir.x, dir.y, ctx.dt);
+      e.vx = noisy.x * speed;
+      e.vy = noisy.y * speed;
+      if (noisy.x !== 0 || noisy.y !== 0) e.angle = Math.atan2(noisy.y, noisy.x);
     }
     return;
   }
