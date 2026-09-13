@@ -4,6 +4,8 @@ import type { WorldContext } from '../context.ts';
 import { applySteeringNoise } from '../movement.ts';
 import { findNearest } from '../targeting.ts';
 import type { Entity } from '../types.ts';
+import { updateFireMage } from './fireMage.ts';
+import { updateHealer } from './healer.ts';
 
 // Shared faction rule enforcement point: enemies path toward the core, but
 // divert to attack a player/ally that enters their aggro radius, then
@@ -11,10 +13,20 @@ import type { Entity } from '../types.ts';
 // (ENEMIES[archetype].behavior), so a new archetype needs only a config
 // entry plus (if genuinely novel) a new case here — the enemy base
 // creation code in factory.ts never has to change.
+//
+// Phase 1 additions: rusher and bomber are BOTH 'melee' behavior — rusher's
+// entire "beeline the core, ignore almost everything" read comes purely from
+// its tiny aggroRadius config value (see config.ts), and bomber has no melee
+// component attached (meleeDamage: 0) so it approaches and simply stands at
+// contact range doing nothing, since its real "attack" (fuse/detonation) is
+// driven centrally every tick in game.ts, independent of AI behavior — see
+// DECISIONS.md.
 export function updateEnemy(e: Entity, ctx: WorldContext, core: Entity): void {
   const def = ENEMIES[e.archetype as keyof typeof ENEMIES];
   if (!def) return;
   if (def.behavior === 'kiter') updateKiter(e, ctx, core);
+  else if (def.behavior === 'healer') updateHealer(e, ctx, core);
+  else if (def.behavior === 'fireMage') updateFireMage(e, ctx, core);
   else updateMelee(e, ctx, core);
 }
 

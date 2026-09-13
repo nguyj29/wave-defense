@@ -102,3 +102,35 @@ export function warmHexColor(hex: string, amount: number): string {
   const rgb = hslToRgb({ h: newHue, s: newSat, l: hsl.l });
   return rgbToHex(rgb.r, rgb.g, rgb.b);
 }
+
+// ============================================================================
+// Generation hue system (full-game Phase 1) — the generation ladder's ONLY
+// visual signal is hue, walking the rainbow violet (g=0, weakest) -> red
+// (g=6, endgame): 270deg down to 0deg, linearly in g. Archetype silhouette
+// (shape) carries "what it is"; this hue carries "how strong." Deliberately
+// implemented as pure HSL math on a base hex color rather than 7 hardcoded
+// hex constants per archetype, so this is a clean drop-in replacement point
+// for real per-generation sprite tinting later (Phase 5): swap
+// `applyGenerationHue` for a canvas/WebGL tint-multiply of a grayscale sprite
+// and every call site (factory/game.ts) stays the same. See DECISIONS.md.
+// ============================================================================
+const GENERATION_HUE_START = 270; // violet, generation 0
+const GENERATION_HUE_END = 0; // red, generation 6
+
+export function hueForGeneration(g: number): number {
+  const clamped = Math.max(0, Math.min(6, g));
+  return GENERATION_HUE_START - (GENERATION_HUE_START - GENERATION_HUE_END) * (clamped / 6);
+}
+
+/**
+ * Recolors `hex` to the hue for generation `g`, preserving its own
+ * saturation/lightness (so different archetypes seeded with slightly
+ * different base S/L still read as subtly distinct even at the same
+ * generation, while all landing on the same hue).
+ */
+export function applyGenerationHue(hex: string, g: number): string {
+  const { r, g: gg, b } = hexToRgb(hex);
+  const hsl = rgbToHsl(r, gg, b);
+  const rgb = hslToRgb({ h: hueForGeneration(g), s: hsl.s, l: hsl.l });
+  return rgbToHex(rgb.r, rgb.g, rgb.b);
+}

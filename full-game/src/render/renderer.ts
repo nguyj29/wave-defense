@@ -212,6 +212,41 @@ export function drawEntity(ctx: CanvasRenderingContext2D, camera: Camera, e: Ent
     case 'square':
       ctx.fillRect(-r, -r, r * 2, r * 2);
       break;
+    case 'squatSquare':
+      // "Squat/wide" bomber silhouette: wider than tall, same radius budget.
+      ctx.fillRect(-r * 1.25, -r * 0.8, r * 2.5, r * 1.6);
+      break;
+    case 'diamond':
+      ctx.beginPath();
+      ctx.moveTo(0, -r);
+      ctx.lineTo(r, 0);
+      ctx.lineTo(0, r);
+      ctx.lineTo(-r, 0);
+      ctx.closePath();
+      ctx.fill();
+      break;
+    case 'chevron':
+      // Rusher: a narrow, notched arrow — concave at the back, not a plain
+      // triangle, so it reads distinctly "fast/aggressive" at a glance.
+      ctx.beginPath();
+      ctx.moveTo(r, 0);
+      ctx.lineTo(-r * 0.6, r * 0.7);
+      ctx.lineTo(-r * 0.15, 0);
+      ctx.lineTo(-r * 0.6, -r * 0.7);
+      ctx.closePath();
+      ctx.fill();
+      break;
+    case 'concaveQuad':
+      // Fire mage: a 4-sided polygon with one reflex (concave) vertex on the
+      // trailing edge.
+      ctx.beginPath();
+      ctx.moveTo(r, 0);
+      ctx.lineTo(-r * 0.3, r * 0.85);
+      ctx.lineTo(-r * 0.55, 0); // reflex vertex, pulled in toward center
+      ctx.lineTo(-r * 0.3, -r * 0.85);
+      ctx.closePath();
+      ctx.fill();
+      break;
   }
 
   if (e.kind === 'player') {
@@ -240,6 +275,96 @@ export function drawEntity(ctx: CanvasRenderingContext2D, camera: Camera, e: Ent
     ctx.fillStyle = pct > 0.5 ? '#5ec96a' : pct > 0.25 ? '#e0c341' : '#e05a4b';
     ctx.fillRect(p.x - w / 2, barY, w * pct, h);
   }
+}
+
+/**
+ * Bomber fuse tell: an expanding ring plus an accelerating flash, drawn on
+ * top of any lit bomber (dead or alive — a detonating corpse still shows
+ * this). `progress` is 0 (just lit) .. 1 (about to detonate); flash
+ * frequency and ring radius both ramp up with it so the countdown reads as
+ * urgent right before it goes off.
+ */
+export function drawBomberFuse(ctx: CanvasRenderingContext2D, camera: Camera, x: number, y: number, radius: number, progress: number): void {
+  const p = camera.worldToScreen(x, y);
+  const s = camera.pixelScale;
+  const ringR = (radius + 6 + progress * 40) * s;
+  ctx.save();
+  ctx.globalAlpha = 0.7 * (1 - progress * 0.3);
+  ctx.strokeStyle = '#ff5533';
+  ctx.lineWidth = Math.max(2, 3 * s);
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, ringR, 0, Math.PI * 2);
+  ctx.stroke();
+  // Accelerating flash: blend toward white with increasing frequency as
+  // progress -> 1.
+  const flashHz = 2 + progress * 10;
+  const flash = (Math.sin(performance.now() * 0.001 * Math.PI * 2 * flashHz) + 1) / 2;
+  if (flash > 1 - progress * 0.6) {
+    ctx.globalAlpha = flash;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, radius * s, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/** Healer's heal-tether: a thin pulsing line from healer to each entity it's currently healing. */
+export function drawHealerTethers(ctx: CanvasRenderingContext2D, camera: Camera, entities: Entity[]): void {
+  const byId = new Map<number, Entity>();
+  for (const e of entities) byId.set(e.id, e);
+  const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.004);
+  ctx.save();
+  ctx.strokeStyle = `rgba(150,255,180,${0.35 + pulse * 0.35})`;
+  ctx.lineWidth = Math.max(1, 2 * camera.pixelScale);
+  for (const e of entities) {
+    if (e.archetype !== 'healer' || e.dead || !e.healingTargetIds?.length) continue;
+    const from = camera.worldToScreen(e.x, e.y);
+    for (const id of e.healingTargetIds) {
+      const t = byId.get(id);
+      if (!t || t.dead) continue;
+      const to = camera.worldToScreen(t.x, t.y);
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+/** A fire mage's in-flight fireball — a small, warm-colored dot with a light glow. */
+export function drawFireball(ctx: CanvasRenderingContext2D, camera: Camera, x: number, y: number): void {
+  const p = camera.worldToScreen(x, y);
+  const r = 7 * camera.pixelScale;
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,140,40,0.35)';
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r * 1.8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ff9d3d';
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+/** Burning ground effect left by a fire mage's fireball — a flickering translucent orange-red disc. */
+export function drawGroundFire(ctx: CanvasRenderingContext2D, camera: Camera, x: number, y: number, radius: number, lifeFrac: number): void {
+  const p = camera.worldToScreen(x, y);
+  const r = radius * camera.pixelScale;
+  const flicker = 0.75 + 0.25 * Math.sin(performance.now() * 0.02 + x);
+  ctx.save();
+  ctx.globalAlpha = Math.min(1, lifeFrac * 1.5) * 0.4 * flicker;
+  ctx.fillStyle = '#ff5a1f';
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = Math.min(1, lifeFrac * 1.5) * 0.6;
+  ctx.strokeStyle = '#ffb347';
+  ctx.lineWidth = Math.max(1, 2 * camera.pixelScale);
+  ctx.stroke();
+  ctx.restore();
 }
 
 export function drawCollisionRadii(ctx: CanvasRenderingContext2D, camera: Camera, entities: Entity[]): void {

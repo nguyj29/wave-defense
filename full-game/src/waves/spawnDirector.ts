@@ -1,7 +1,7 @@
 import { activeSpawnPoints, type SpawnPoint } from '../world/map.ts';
 import { CORE, SPAWN_DIRECTOR, type WaveDef } from '../config.ts';
 
-export type SpawnKind = 'grunt' | 'archer' | 'boss';
+export type SpawnKind = 'grunt' | 'archer' | 'rusher' | 'bomber' | 'healer' | 'fireMage' | 'boss';
 
 export interface SpawnRequest {
   kind: SpawnKind;
@@ -47,6 +47,8 @@ export class SpawnDirector {
 
   spawnedGrunts = 0;
   spawnedArchers = 0;
+  spawnedRushers = 0;
+  spawnedBombers = 0;
   bossSpawned = false;
   bossWarningActive = false;
   private bossWarningTimer = 0;
@@ -77,13 +79,19 @@ export class SpawnDirector {
   }
 
   get budgetSpent(): number {
-    return this.spawnedGrunts + this.spawnedArchers + (this.bossSpawned ? 1 : 0);
+    return this.spawnedGrunts + this.spawnedArchers + this.spawnedRushers + this.spawnedBombers + (this.bossSpawned ? 1 : 0);
   }
   get budgetTotal(): number {
-    return this.wave.grunts + this.wave.archers + this.wave.boss;
+    return this.wave.grunts + this.wave.archers + this.wave.rushers + this.wave.bombers + this.wave.boss;
   }
   get isBudgetExhausted(): boolean {
-    return this.spawnedGrunts >= this.wave.grunts && this.spawnedArchers >= this.wave.archers && (this.wave.boss === 0 || this.bossSpawned);
+    return (
+      this.spawnedGrunts >= this.wave.grunts &&
+      this.spawnedArchers >= this.wave.archers &&
+      this.spawnedRushers >= this.wave.rushers &&
+      this.spawnedBombers >= this.wave.bombers &&
+      (this.wave.boss === 0 || this.bossSpawned)
+    );
   }
 
   registerKill(): void {
@@ -131,8 +139,8 @@ export class SpawnDirector {
 
     // Boss telegraph/spawn timing, independent of the clump/pause cycle.
     if (spawningAllowed && this.wave.boss > 0 && !this.bossSpawned && !this.bossWarningActive) {
-      const spawnedSoFar = this.spawnedGrunts + this.spawnedArchers;
-      const nonBossBudget = this.wave.grunts + this.wave.archers;
+      const spawnedSoFar = this.spawnedGrunts + this.spawnedArchers + this.spawnedRushers + this.spawnedBombers;
+      const nonBossBudget = this.wave.grunts + this.wave.archers + this.wave.rushers + this.wave.bombers;
       const budgetTrigger = nonBossBudget > 0 && spawnedSoFar / nonBossBudget >= SPAWN_DIRECTOR.bossBudgetFraction;
       const timeTrigger = this.elapsed >= SPAWN_DIRECTOR.bossLatestSec;
       if (budgetTrigger || timeTrigger) {
@@ -167,6 +175,8 @@ export class SpawnDirector {
           requests.push({ kind, x: sp.x, y: sp.y });
           if (kind === 'grunt') this.spawnedGrunts++;
           else if (kind === 'archer') this.spawnedArchers++;
+          else if (kind === 'rusher') this.spawnedRushers++;
+          else if (kind === 'bomber') this.spawnedBombers++;
           this.clumpSpawnedInClump++;
           if (this.clumpSpawnedInClump >= this.clumpTarget) {
             this.advanceToNextClump();
@@ -190,14 +200,32 @@ export class SpawnDirector {
     this.spawnAccumulator = 0;
   }
 
-  private pickNextKind(): 'grunt' | 'archer' | null {
-    const gruntsLeft = this.wave.grunts - this.spawnedGrunts;
-    const archersLeft = this.wave.archers - this.spawnedArchers;
-    if (gruntsLeft <= 0 && archersLeft <= 0) return null;
-    if (gruntsLeft <= 0) return 'archer';
-    if (archersLeft <= 0) return 'grunt';
-    // Roughly interleave proportional to remaining budgets.
-    return gruntsLeft / (gruntsLeft + archersLeft) > Math.random() ? 'grunt' : 'archer';
+  /**
+   * Picks the next non-boss archetype to spawn, weighted by each
+   * archetype's remaining budget in this wave (so e.g. wave 9's 8 bombers
+   * interleave with its ~40 grunts roughly proportionally, rather than all
+   * dumping out at once). Generalizes the prototype's 2-archetype
+   * grunt/archer interleave to any number of archetypes a WaveDef defines a
+   * nonzero budget for — extending WaveDef with a new archetype field needs
+   * no change here.
+   */
+  private pickNextKind(): 'grunt' | 'archer' | 'rusher' | 'bomber' | null {
+    type NonBossKind = 'grunt' | 'archer' | 'rusher' | 'bomber';
+    const all: { kind: NonBossKind; left: number }[] = [
+      { kind: 'grunt', left: this.wave.grunts - this.spawnedGrunts },
+      { kind: 'archer', left: this.wave.archers - this.spawnedArchers },
+      { kind: 'rusher', left: this.wave.rushers - this.spawnedRushers },
+      { kind: 'bomber', left: this.wave.bombers - this.spawnedBombers },
+    ];
+    const remaining = all.filter((r) => r.left > 0);
+    if (remaining.length === 0) return null;
+    const total = remaining.reduce((sum, r) => sum + r.left, 0);
+    let roll = Math.random() * total;
+    for (const r of remaining) {
+      if (roll < r.left) return r.kind;
+      roll -= r.left;
+    }
+    return remaining[remaining.length - 1].kind;
   }
 
   /** Debug (F8): force the boss to spawn immediately, bypassing the telegraph. */

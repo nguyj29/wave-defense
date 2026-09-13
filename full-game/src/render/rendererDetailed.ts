@@ -229,6 +229,68 @@ export function drawEntityDetailed(ctx: CanvasRenderingContext2D, camera: Camera
       ctx.strokeRect(-r, -r, r * 2, r * 2);
       break;
     }
+    case 'squatSquare': {
+      const w = r * 2.5;
+      const h = r * 1.6;
+      ctx.fillStyle = base;
+      ctx.fillRect(-w / 2, -h / 2, w, h);
+      ctx.strokeStyle = dark;
+      ctx.lineWidth = Math.max(1, r * 0.1);
+      ctx.strokeRect(-w / 2, -h / 2, w, h);
+      ctx.fillStyle = light;
+      ctx.fillRect(-w / 2 + w * 0.1, -h / 2 + h * 0.12, w * 0.35, h * 0.3);
+      break;
+    }
+    case 'diamond': {
+      ctx.fillStyle = base;
+      ctx.beginPath();
+      ctx.moveTo(0, -r);
+      ctx.lineTo(r, 0);
+      ctx.lineTo(0, r);
+      ctx.lineTo(-r, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = dark;
+      ctx.lineWidth = Math.max(1, r * 0.1);
+      ctx.stroke();
+      ctx.fillStyle = light;
+      ctx.beginPath();
+      ctx.moveTo(0, -r * 0.5);
+      ctx.lineTo(r * 0.5, 0);
+      ctx.lineTo(0, r * 0.5);
+      ctx.lineTo(-r * 0.5, 0);
+      ctx.closePath();
+      ctx.fill();
+      break;
+    }
+    case 'chevron': {
+      ctx.fillStyle = base;
+      ctx.beginPath();
+      ctx.moveTo(r, 0);
+      ctx.lineTo(-r * 0.6, r * 0.7);
+      ctx.lineTo(-r * 0.15, 0);
+      ctx.lineTo(-r * 0.6, -r * 0.7);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = dark;
+      ctx.lineWidth = Math.max(1, r * 0.1);
+      ctx.stroke();
+      break;
+    }
+    case 'concaveQuad': {
+      ctx.fillStyle = base;
+      ctx.beginPath();
+      ctx.moveTo(r, 0);
+      ctx.lineTo(-r * 0.3, r * 0.85);
+      ctx.lineTo(-r * 0.55, 0);
+      ctx.lineTo(-r * 0.3, -r * 0.85);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = dark;
+      ctx.lineWidth = Math.max(1, r * 0.1);
+      ctx.stroke();
+      break;
+    }
   }
 
   if (e.kind === 'player') {

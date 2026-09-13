@@ -7,7 +7,10 @@
 
 export type Faction = 'player' | 'enemy';
 export type EntityKind = 'player' | 'ally' | 'enemy' | 'projectile' | 'coin' | 'core';
-export type Shape = 'circle' | 'triangle' | 'hexagon' | 'square';
+// chevron/diamond/concaveQuad/squatSquare added for Phase 1's new archetypes
+// (rusher/healer/fire-mage/bomber) — see render/renderer.ts &
+// render/rendererDetailed.ts for the custom polygon paths.
+export type Shape = 'circle' | 'triangle' | 'hexagon' | 'square' | 'chevron' | 'diamond' | 'concaveQuad' | 'squatSquare';
 
 export interface Health {
   hp: number;
@@ -56,6 +59,42 @@ export interface AiState {
   idleVy?: number;
 }
 
+// --- Phase 1 archetype-specific attack/behavior components ------------------
+// Bomber: fuse lights on first survived hit (see combat/damage.ts), then
+// detonates in `combat/areaDamage.ts`-driven AoE regardless of whether the
+// bomber itself has since died — see fuseLit/fuseTimer/fuseDetonated on
+// Entity below and DECISIONS.md for the full state-machine writeup.
+export interface BomberAttack {
+  fuseSec: number;
+  detonationDamage: number;
+  detonationRadius: number;
+  enemyFalloff: number; // 0..1, fraction of detonationDamage dealt to other enemies (chain-detonation friendly fire)
+}
+
+// Healer: heals every enemy (never itself) within healRadius for healRate hp/s.
+export interface HealerAttack {
+  healRadius: number;
+  healRate: number;
+}
+
+// Fire mage: lobs an arcing fireball (tracked outside the normal projectile
+// entity pipeline — see Game.fireballs in game.ts) that deals `damage` on
+// impact in `impactRadius`, then leaves burning ground for `burnDuration`
+// dealing `burnDps` in `burnRadius` (both impact and burn use the
+// faction-aware `enemyFalloff` split — see combat/areaDamage.ts).
+export interface FireMageAttack {
+  range: number;
+  projectileSpeed: number;
+  rate: number; // casts/s
+  cooldown: number;
+  damage: number;
+  impactRadius: number;
+  burnDuration: number;
+  burnDps: number;
+  burnRadius: number;
+  enemyFalloff: number;
+}
+
 export interface ProjectileData {
   damage: number;
   ownerFaction: Faction;
@@ -94,6 +133,14 @@ export interface Entity {
   projectile?: ProjectileData;
   archetype?: string; // e.g. 'grunt' | 'archer' | 'boss' — for enemies/allies
   isBoss?: boolean;
+  generation?: number; // 0 (violet) .. 6 (red) — enemies only, see config.ts GENERATION
+  bomber?: BomberAttack;
+  healer?: HealerAttack;
+  fireMage?: FireMageAttack;
+  fuseLit?: boolean; // bomber only: true once it has survived a hit and started counting down
+  fuseTimer?: number; // bomber only: seconds remaining until detonation, once lit
+  fuseDetonated?: boolean; // bomber only: true once detonation has actually fired (guards double-detonation & keeps the corpse alive in the entity list until it does)
+  healingTargetIds?: number[]; // healer only: ids currently being healed this tick, for the tether-line render (entities/behaviors/healer.ts)
   summonedByPlayer?: boolean;
   spawnerId?: number;
   coinValue?: number;

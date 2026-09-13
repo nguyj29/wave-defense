@@ -1,4 +1,4 @@
-import { ALLY, CORE, ENEMIES, PLAYER, type EnemyDef } from '../config.ts';
+import { ALLY, CORE, ENEMIES, PLAYER, type EnemyArchetypeId, type EnemyDef } from '../config.ts';
 import type { Entity, Faction } from './types.ts';
 import { allocEntityId } from './types.ts';
 
@@ -58,7 +58,13 @@ export function createAlly(x: number, y: number, spec: AllySpec): Entity {
   return e;
 }
 
-export function createEnemy(archetype: 'grunt' | 'archer' | 'boss', x: number, y: number, defOverride?: Partial<EnemyDef>): Entity {
+export function createEnemy(
+  archetype: EnemyArchetypeId,
+  x: number,
+  y: number,
+  defOverride?: Partial<EnemyDef>,
+  generation?: number,
+): Entity {
   const def = { ...ENEMIES[archetype], ...defOverride };
   const e = base('enemy', 'enemy', x, y);
   e.radius = def.radius;
@@ -66,9 +72,13 @@ export function createEnemy(archetype: 'grunt' | 'archer' | 'boss', x: number, y
   e.shape = def.shape;
   e.health = { hp: def.hp, maxHp: def.hp };
   // Enemies never get a Regen component — this is the enforcement point for
-  // "no enemy ever regenerates, faction-wide."
+  // "no enemy ever regenerates, faction-wide." (Healer's heal-application
+  // code separately excludes itself as a heal target — see
+  // entities/behaviors/healer.ts — so the rule holds even for the one
+  // archetype that hands out HP.)
   e.archetype = archetype;
   e.isBoss = def.isBoss ?? false;
+  e.generation = generation;
   e.ai = { state: 'toCore', targetId: null, strafeDir: 1, facingRefreshTimer: 0 };
   if (def.meleeDamage > 0) {
     e.melee = { damage: def.meleeDamage, rate: def.meleeRate, cooldown: 0, range: 0 };
@@ -82,6 +92,15 @@ export function createEnemy(archetype: 'grunt' | 'archer' | 'boss', x: number, y
       range: def.ranged.range,
       kiteDistance: def.ranged.kiteDistance,
     };
+  }
+  if (def.bomber) {
+    e.bomber = { ...def.bomber };
+  }
+  if (def.healer) {
+    e.healer = { ...def.healer };
+  }
+  if (def.fireMage) {
+    e.fireMage = { ...def.fireMage, cooldown: 0 };
   }
   e.coinValue = Math.round((def.coinsMin + def.coinsMax) / 2);
   e.speedStat = def.speed;

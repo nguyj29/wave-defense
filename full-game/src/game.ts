@@ -8,7 +8,9 @@ import {
   ENEMIES,
   endlessFactor,
   GEM,
+  generationScale,
   getWaveForDifficulty,
+  pickSpawnGeneration,
   PLAYER,
   SHOP,
   SUMMON,
@@ -19,6 +21,7 @@ import {
   type EnemyDef,
 } from './config.ts';
 import { setGodMode, updateRegen } from './combat/damage.ts';
+import { applyAreaDamage, applyAreaDotDamage } from './combat/areaDamage.ts';
 import {
   createPlayerWeaponState,
   startReload,
@@ -30,7 +33,7 @@ import { updateProjectiles } from './combat/projectiles.ts';
 import { tickCooldowns } from './combat/weapons.ts';
 import { updateAlly } from './entities/behaviors/ally.ts';
 import { updateEnemy } from './entities/behaviors/enemy.ts';
-import type { WorldContext } from './entities/context.ts';
+import type { FireballSpawn, WorldContext } from './entities/context.ts';
 import { createAlly, createCoin, createCore, createEnemy, createPlayer } from './entities/factory.ts';
 import { integrateAndResolve } from './entities/movement.ts';
 import { updateSpawners, type AllySpawner } from './entities/spawnerSystem.ts';
@@ -62,9 +65,13 @@ import { drawBossWarningBanner, drawMinimap } from './ui/minimap.ts';
 import { ShopPanel } from './ui/shopPanel.ts';
 import { drawStartScreen, hitTestStartScreen } from './ui/startScreen.ts';
 import {
+  drawBomberFuse,
   drawCollisionRadii,
   drawEntity,
+  drawFireball,
   drawFlowFieldDebug,
+  drawGroundFire,
+  drawHealerTethers,
   drawObstacles,
   drawShopMarker,
   drawSpawners,
@@ -73,7 +80,7 @@ import {
   drawWorldBounds,
 } from './render/renderer.ts';
 import { drawEntityDetailed, drawObstaclesDetailed, drawWallsDetailed } from './render/rendererDetailed.ts';
-import { warmHexColor } from './render/colorUtils.ts';
+import { applyGenerationHue, warmHexColor } from './render/colorUtils.ts';
 import { playSfx } from './audio/sfx.ts';
 import { isMusicMuted, setMusicIntensity, toggleMusicMute } from './audio/music.ts';
 import { FlowField, type Pathfinder } from './world/flowfield.ts';
@@ -101,6 +108,27 @@ interface DebugState {
 // 'detailed' is the default).
 type RenderStyle = 'flat' | 'detailed';
 
+// Full-game Phase 1: a fire mage's fireball in flight and the burning-ground
+// effect it leaves behind are both tracked as lightweight parallel arrays on
+// Game rather than as full ECS entities — see entities/context.ts's
+// FireballSpawn doc comment for why (they don't fit the shared
+// bullet-collision pipeline's "stop on first hit" assumption, since they lob
+// to a point and detonate an AoE + spawn a persistent zone on arrival).
+interface Fireball extends FireballSpawn {
+  traveled: number;
+  dead: boolean;
+}
+interface GroundEffect {
+  x: number;
+  y: number;
+  radius: number;
+  dps: number;
+  enemyFalloff: number;
+  ownerFaction: Entity['faction'];
+  timer: number;
+  maxTimer: number;
+}
+
 function approach(current: number, target: number, maxDelta: number): number {
   if (current < target) return Math.min(current + maxDelta, target);
   if (current > target) return Math.max(current - maxDelta, target);
@@ -123,6 +151,9 @@ export class Game {
   player!: Entity;
   core!: Entity;
   spawners: AllySpawner[] = [];
+  // Fire mage projectiles/burning-ground zones — see the Fireball/GroundEffect interfaces above.
+  fireballs: Fireball[] = [];
+  groundEffects: GroundEffect[] = [];
 
   shopLevels: ShopLevels = createInitialShopLevels();
   coins = 0;
@@ -211,6 +242,8 @@ export class Game {
     (this.pathfinder as FlowField).recompute(this.obstacles);
 
     this.entities = [];
+    this.fireballs = [];
+    this.groundEffects = [];
     this.shopLevels = createInitialShopLevels();
     this.coins = 0;
     this.currentWaveCoinBonus = 0;
@@ -397,6 +430,7 @@ export class Game {
       obstacles: this.obstacles,
       pathfinder: this.pathfinder,
       spawnProjectile: (p) => this.entities.push(p),
+      spawnFireball: (fb) => this.fireballs.push({ ...fb, traveled: 0, dead: false }),
       playerX: this.player.x,
       playerY: this.player.y,
     };
@@ -423,6 +457,62 @@ export class Game {
     // Projectiles.
     const projectiles = this.entities.filter((e) => e.kind === 'projectile' && !e.dead);
     updateProjectiles(projectiles, this.obstacleGrid, this.unitGrid, dt, () => {});
+
+    // Fire mage fireballs: fly to their (fixed) target point, then detonate
+    // an AoE impact + spawn a burning-ground zone there (see Fireball/
+    // GroundEffect and entities/context.ts::FireballSpawn).
+    for (const fb of this.fireballs) {
+      const dx = fb.targetX - fb.x;
+      const dy = fb.targetY - fb.y;
+      const d = Math.hypot(dx, dy);
+      const step = fb.speed * dt;
+      if (d <= step) {
+        applyAreaDamage(this.entities, fb.targetX, fb.targetY, fb.impactRadius, fb.damage, fb.enemyFalloff, fb.ownerFaction);
+        this.groundEffects.push({
+          x: fb.targetX,
+          y: fb.targetY,
+          radius: fb.burnRadius,
+          dps: fb.burnDps,
+          enemyFalloff: fb.enemyFalloff,
+          ownerFaction: fb.ownerFaction,
+          timer: fb.burnDuration,
+          maxTimer: fb.burnDuration,
+        });
+        playSfx('fireballImpact');
+        fb.dead = true;
+      } else {
+        fb.x += (dx / d) * step;
+        fb.y += (dy / d) * step;
+      }
+    }
+    this.fireballs = this.fireballs.filter((fb) => !fb.dead);
+
+    // Burning ground: continuous per-tick faction-aware DoT (see
+    // combat/areaDamage.ts::applyAreaDotDamage — same falloff rule as bomber
+    // detonation, extracted into that shared utility).
+    for (const ge of this.groundEffects) {
+      applyAreaDotDamage(this.entities, ge.x, ge.y, ge.radius, ge.dps, ge.enemyFalloff, ge.ownerFaction, dt);
+      ge.timer -= dt;
+    }
+    this.groundEffects = this.groundEffects.filter((ge) => ge.timer > 0);
+
+    // Bomber fuse/detonation: driven centrally (not in the AI behavior pass
+    // above) because it must keep ticking even on a bomber that has already
+    // died from unrelated damage — "once lit, it detonates regardless." Runs
+    // over ALL entities (not just liveUnits) so a dead-but-still-fused
+    // bomber's countdown isn't silently dropped; the cull filter at the
+    // bottom of this method keeps such a bomber in `entities` until it
+    // actually detonates (fuseDetonated).
+    for (const e of this.entities) {
+      if (e.archetype !== 'bomber' || !e.fuseLit || e.fuseDetonated || !e.bomber) continue;
+      e.fuseTimer = (e.fuseTimer ?? e.bomber.fuseSec) - dt;
+      if (e.fuseTimer <= 0) {
+        e.fuseDetonated = true;
+        e.dead = true;
+        applyAreaDamage(this.entities, e.x, e.y, e.bomber.detonationRadius, e.bomber.detonationDamage, e.bomber.enemyFalloff, 'enemy', e.id);
+        playSfx('bomberDetonate');
+      }
+    }
 
     // Movement integration + collision resolution (player/ally/enemy only).
     const movers = liveUnits.filter((e) => e.kind !== 'core');
@@ -538,8 +628,12 @@ export class Game {
     this.rateHistory.push(this.spawnDirector.currentRate);
     if (this.rateHistory.length > 120) this.rateHistory.shift();
 
-    // Cull dead non-core entities so arrays don't grow unbounded.
-    this.entities = this.entities.filter((e) => !e.dead || e.kind === 'core');
+    // Cull dead non-core entities so arrays don't grow unbounded. A bomber
+    // that has died but whose fuse is still counting down (lit, not yet
+    // detonated) is deliberately kept alive in this array — see the
+    // fuse/detonation driver above — so its countdown can finish and it can
+    // actually detonate before being removed.
+    this.entities = this.entities.filter((e) => !e.dead || e.kind === 'core' || (e.archetype === 'bomber' && !!e.fuseLit && !e.fuseDetonated));
   }
 
   private onWaveTransition(bonus: number): void {
@@ -585,16 +679,51 @@ export class Game {
     // unscaled base ENEMIES stats exactly.
     // Round 8: composed multiplicatively with the endless-wave escalation
     // factor (1.0 at/before wave 5) — see DECISIONS.md.
+    //
+    // Full-game Phase 1: also composed multiplicatively with the
+    // generation's own hpDmg/speed/coin multipliers (see config.ts
+    // generationScale) — generation is picked per-spawn via
+    // pickSpawnGeneration(), which handles both the wave->generation mapping
+    // and (from wave 9 on) the 70/30 current-gen/one-gen-below mix. All
+    // three scaling axes (generation, difficulty, endless) are composed here
+    // in one place, in game.ts, so no other system needs to know about more
+    // than one of them at a time.
     const diff = DIFFICULTY[this.difficulty];
     const waveNumber = this.waveManager.waveIndex + 1;
     const endless = endlessFactor(waveNumber);
+    const isBoss = kind === 'boss';
+    const generation = pickSpawnGeneration(waveNumber, isBoss);
+    const gen = generationScale(generation);
     const def = ENEMIES[kind];
     const override: Partial<EnemyDef> = {
-      hp: Math.round(def.hp * diff.enemyHpMult * endless),
-      meleeDamage: Math.round(def.meleeDamage * diff.enemyDmgMult * endless),
+      hp: Math.round(def.hp * gen.hpDmg * diff.enemyHpMult * endless),
+      speed: def.speed * gen.speed,
+      meleeDamage: Math.round(def.meleeDamage * gen.hpDmg * diff.enemyDmgMult * endless),
+      coinsMin: Math.max(1, Math.round(def.coinsMin * gen.coin)),
+      coinsMax: Math.max(1, Math.round(def.coinsMax * gen.coin)),
     };
     if (def.ranged) {
-      override.ranged = { ...def.ranged, damage: Math.round(def.ranged.damage * diff.enemyDmgMult * endless) };
+      override.ranged = { ...def.ranged, damage: Math.round(def.ranged.damage * gen.hpDmg * diff.enemyDmgMult * endless) };
+    }
+    if (def.bomber) {
+      override.bomber = {
+        ...def.bomber,
+        detonationDamage: Math.round(def.bomber.detonationDamage * gen.hpDmg * diff.enemyDmgMult * endless),
+      };
+    }
+    if (def.healer) {
+      // Healing "power" scales with generation the same way damage does —
+      // not specified explicitly by the brief, a judgment call (see
+      // DECISIONS.md) so a red-generation healer is a meaningfully bigger
+      // problem than a violet one, not just a bigger HP bar.
+      override.healer = { ...def.healer, healRate: def.healer.healRate * gen.hpDmg };
+    }
+    if (def.fireMage) {
+      override.fireMage = {
+        ...def.fireMage,
+        damage: Math.round(def.fireMage.damage * gen.hpDmg * diff.enemyDmgMult * endless),
+        burnDps: def.fireMage.burnDps * gen.hpDmg * diff.enemyDmgMult * endless,
+      };
     }
     // Round 8: hue-shift the archetype's base color warmer, proportional to a
     // combined "power level" from BOTH difficulty and endless-wave scaling
@@ -602,10 +731,17 @@ export class Game {
     // powerLevel->warmth curve and why hp is chosen over averaging every
     // multiplier). Normal difficulty at/before wave 5 has powerLevel === 1,
     // so warmth === 0 and the color is untouched.
+    //
+    // Full-game Phase 1: generation hue is applied FIRST (the primary
+    // "generation" visual signal, walking violet->red per generation), then
+    // the existing difficulty/endless warm-shift nudges it further toward
+    // red on top of whatever generation already set — see DECISIONS.md for
+    // why these two hue-shift mechanisms are allowed to compose rather than
+    // one replacing the other.
     const powerLevel = diff.enemyHpMult * endless;
     const warmth = Math.max(0, 1 - 1 / powerLevel);
-    override.color = warmHexColor(def.color, warmth);
-    this.entities.push(createEnemy(kind, x, y, override));
+    override.color = warmHexColor(applyGenerationHue(def.color, generation), warmth);
+    this.entities.push(createEnemy(kind, x, y, override, generation));
   }
 
   // -------------------------------------------------------------------
@@ -712,9 +848,30 @@ export class Game {
       }
     }
     for (const e of this.entities) {
-      if (e.dead || e.kind === 'coin') continue;
+      // A dead-but-still-fused bomber (its detonation hasn't fired yet — see
+      // simulate()'s cull filter) keeps rendering as a corpse so the fuse
+      // visual below has something to sit on, instead of just vanishing and
+      // then silently exploding.
+      const stillFusing = e.archetype === 'bomber' && !!e.fuseLit && !e.fuseDetonated;
+      if ((e.dead && !stillFusing) || e.kind === 'coin') continue;
       if (detailed) drawEntityDetailed(ctx, this.camera, e, alpha);
       else drawEntity(ctx, this.camera, e, alpha);
+    }
+
+    // Phase 1 archetype visuals: bomber fuse ring/flash, healer heal
+    // tethers, in-flight fireballs, burning ground.
+    for (const e of this.entities) {
+      if (e.archetype === 'bomber' && e.fuseLit && !e.fuseDetonated && e.bomber) {
+        const progress = 1 - Math.max(0, e.fuseTimer ?? 0) / e.bomber.fuseSec;
+        drawBomberFuse(ctx, this.camera, e.x, e.y, e.radius, progress);
+      }
+    }
+    drawHealerTethers(ctx, this.camera, this.entities);
+    for (const ge of this.groundEffects) {
+      drawGroundFire(ctx, this.camera, ge.x, ge.y, ge.radius, ge.timer / ge.maxTimer);
+    }
+    for (const fb of this.fireballs) {
+      drawFireball(ctx, this.camera, fb.x, fb.y);
     }
 
     if (this.debug.flowField) drawFlowFieldDebug(ctx, this.camera, this.pathfinder as FlowField);

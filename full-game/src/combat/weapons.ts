@@ -9,6 +9,7 @@ export function tickCooldowns(entities: Entity[], dt: number): void {
   for (const e of entities) {
     if (e.melee && e.melee.cooldown > 0) e.melee.cooldown -= dt;
     if (e.ranged && e.ranged.cooldown > 0) e.ranged.cooldown -= dt;
+    if (e.fireMage && e.fireMage.cooldown > 0) e.fireMage.cooldown -= dt;
   }
 }
 

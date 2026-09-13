@@ -270,11 +270,99 @@ export const STEER_NOISE = {
 };
 
 // ---------------------------------------------------------------------------
+// Generations (full-game Phase 1) — enemies come in 7 generations mapped to
+// the rainbow, violet (weakest) -> red (endgame). A generation is a
+// multiplier applied to a base archetype's generation-0 stats, NOT a
+// separate enemy: see entities/factory.ts (stat scaling, done by the
+// caller in game.ts) and render/colorUtils.ts (hue-by-generation, the only
+// visual signal — silhouette/shape carries archetype identity).
+// ---------------------------------------------------------------------------
+export const GENERATION = {
+  count: 7, // 0..6
+  // HP/damage scale steeply (~11x violet->red); speed only gently (~1.4x
+  // violet->red) — an enemy that scales speed at the same rate as HP becomes
+  // impossible to kite and every archetype starts playing the same, so speed
+  // gets its own, far shallower, exponent base. Coins scale a little behind
+  // power (1.35 vs 1.5) so later waves are richer without breaking the
+  // early-game economy's relative weight.
+  hpDmgExponentBase: 1.5,
+  speedExponentBase: 1.06,
+  coinExponentBase: 1.35,
+  wavesPerGeneration: 4, // g = floor((wave-1)/wavesPerGeneration), capped at count-1
+  // From this wave on, spawns mix ~70% current generation / ~30% one
+  // generation below (chaff) rather than 100% current generation — see
+  // pickSpawnGeneration() below.
+  mixFromWave: 9,
+  mixCurrentFraction: 0.7,
+};
+
+export interface GenerationScale {
+  hpDmg: number;
+  speed: number;
+  coin: number;
+}
+
+export function generationScale(g: number): GenerationScale {
+  const gg = Math.max(0, g);
+  return {
+    hpDmg: Math.pow(GENERATION.hpDmgExponentBase, gg),
+    speed: Math.pow(GENERATION.speedExponentBase, gg),
+    coin: Math.pow(GENERATION.coinExponentBase, gg),
+  };
+}
+
+/**
+ * Generation for a given 1-based wave number, min(floor((wave-1)/4), 6).
+ * `offset` lets a caller request a generation above/below that baseline
+ * without touching this function — Phase 3's bosses (always one generation
+ * above their wave) will call `generationForWave(wave, 1)`; this parameter
+ * exists from Phase 1 on for exactly that future use, and is already used
+ * below by pickSpawnGeneration()'s isBoss path.
+ */
+export function generationForWave(wave: number, offset = 0): number {
+  const base = Math.min(Math.floor((wave - 1) / GENERATION.wavesPerGeneration), GENERATION.count - 1);
+  return Math.max(0, Math.min(GENERATION.count - 1, base + offset));
+}
+
+/**
+ * The generation to actually use for one spawned enemy: from
+ * GENERATION.mixFromWave on, a non-boss spawn rolls ~mixCurrentFraction for
+ * the wave's baseline generation and the rest for one generation below (as
+ * chaff, so a late wave reads as a mixed crowd with priorities rather than a
+ * uniform wall of identical enemies) — see DECISIONS.md. Bosses always use
+ * the wave's baseline generation + 1 and are never mixed down.
+ */
+export function pickSpawnGeneration(waveNumber: number, isBoss = false): number {
+  if (isBoss) return generationForWave(waveNumber, 1);
+  const baseGen = generationForWave(waveNumber);
+  if (waveNumber < GENERATION.mixFromWave) return baseGen;
+  return Math.random() < GENERATION.mixCurrentFraction ? baseGen : Math.max(0, baseGen - 1);
+}
+
+// ---------------------------------------------------------------------------
 // Enemy archetypes — data-driven. New archetype = config entry + behavior key.
+// Every stat below is the archetype's GENERATION-0 (violet) baseline; actual
+// spawned stats are `baseline * generationScale(g).*` (composed with
+// difficulty/endless multipliers exactly as before) — see
+// game.ts::spawnEnemyFromRequest, the single place all of this scaling is
+// composed together.
+//
+// All archetypes share four conceptual fields per the brief: `aggroRadius`
+// (aggro range), an attack range (melee contact / ranged.range /
+// fireMage.range — archetype-specific, not duplicated as a separate generic
+// field to avoid two sources of truth), an anchor behavior (`toCore` for
+// every combat archetype, `behindHorde` for the healer, driving
+// entities/behaviors/healer.ts's positioning heuristic), and a leash radius.
+// `leashRadius` below is METADATA ONLY in Phase 1 — no archetype currently
+// returns to an anchor point once it commits to a target (the prototype's
+// existing "divert to attack, resume toward core after" IS the closest thing
+// to a leash and already works via aggroRadius); a real "give up and
+// return" leash behavior is not yet implemented and is flagged here for a
+// later phase if it turns out to be needed. See DECISIONS.md.
 // ---------------------------------------------------------------------------
 export interface EnemyDef {
   key: string;
-  shape: 'circle' | 'triangle' | 'hexagon';
+  shape: 'circle' | 'triangle' | 'hexagon' | 'square' | 'chevron' | 'diamond' | 'concaveQuad' | 'squatSquare';
   color: string;
   radius: number;
   hp: number;
@@ -282,9 +370,11 @@ export interface EnemyDef {
   meleeDamage: number;
   meleeRate: number;
   aggroRadius: number;
+  anchor: 'core' | 'behindHorde';
+  leashRadius: number; // metadata only for now — see comment above
   coinsMin: number;
   coinsMax: number;
-  behavior: 'melee' | 'kiter' | 'melee'; // behavior key, see entities/behaviors/enemy.ts
+  behavior: 'melee' | 'kiter' | 'healer' | 'fireMage'; // behavior key, see entities/behaviors/enemy.ts
   ranged?: {
     damage: number;
     rate: number; // shots/s
@@ -292,20 +382,58 @@ export interface EnemyDef {
     range: number;
     kiteDistance: number;
   };
+  bomber?: {
+    fuseSec: number;
+    detonationDamage: number;
+    detonationRadius: number;
+    enemyFalloff: number;
+  };
+  healer?: {
+    healRadius: number;
+    healRate: number;
+  };
+  fireMage?: {
+    range: number;
+    projectileSpeed: number;
+    rate: number;
+    damage: number;
+    impactRadius: number;
+    burnDuration: number;
+    burnDps: number;
+    burnRadius: number;
+    enemyFalloff: number;
+  };
   isBoss?: boolean;
 }
 
-export const ENEMIES: Record<'grunt' | 'archer' | 'boss', EnemyDef> = {
+export type EnemyArchetypeId = 'grunt' | 'archer' | 'rusher' | 'bomber' | 'healer' | 'fireMage' | 'boss';
+
+// Shared faction-aware-area-damage falloff for bomber detonation / fire-mage
+// burning ground: "friendly fire" among enemies is intentional and identical
+// for both mechanics, so they share this one constant rather than each
+// picking their own number — see combat/areaDamage.ts.
+const ENEMY_AOE_FALLOFF = 0.35;
+
+// All archetypes seed `color` as a violet (hue ~270, matching generation 0)
+// with a slightly different saturation/lightness each — the hue itself gets
+// completely overwritten by render/colorUtils.ts::applyGenerationHue at
+// spawn time, so archetypes read as visually distinct only via shape (as
+// intended: "silhouette carries archetype, hue carries generation"), while
+// still having a sensible, non-identical base color if that hue-shift is
+// ever bypassed (e.g. a debug tool rendering ENEMIES[...] directly).
+export const ENEMIES: Record<EnemyArchetypeId, EnemyDef> = {
   grunt: {
     key: 'grunt',
     shape: 'circle',
-    color: '#8f00ff', // violet
+    color: '#8f00ff',
     radius: 14,
     hp: 30,
     speed: 90,
     meleeDamage: 8,
     meleeRate: 1,
     aggroRadius: 150,
+    anchor: 'core',
+    leashRadius: 0,
     coinsMin: 1,
     coinsMax: 2,
     behavior: 'melee',
@@ -313,7 +441,7 @@ export const ENEMIES: Record<'grunt' | 'archer' | 'boss', EnemyDef> = {
   archer: {
     key: 'archer',
     shape: 'triangle',
-    color: '#4b0082', // indigo
+    color: '#8a3bd6',
     // Round 7: bumped from 13, alongside the player radius bump — see
     // DECISIONS.md. Same reasoning: every consumer reads e.radius live, so
     // this is a pure data change.
@@ -322,7 +450,12 @@ export const ENEMIES: Record<'grunt' | 'archer' | 'boss', EnemyDef> = {
     speed: 80,
     meleeDamage: 0,
     meleeRate: 0,
-    aggroRadius: 450,
+    // Bumped from 450 to match the full-game brief's archer table (range 500,
+    // aggro 500) when generalizing archer into the archetype+generation
+    // system — see DECISIONS.md.
+    aggroRadius: 500,
+    anchor: 'core',
+    leashRadius: 0,
     coinsMin: 2,
     coinsMax: 3,
     behavior: 'kiter',
@@ -330,20 +463,130 @@ export const ENEMIES: Record<'grunt' | 'archer' | 'boss', EnemyDef> = {
       damage: 10,
       rate: 0.5, // one shot per 2s
       projectileSpeed: 500,
-      range: 450,
+      range: 500,
       kiteDistance: 350,
+    },
+  },
+  // Rusher: beelines the core and largely ignores everything else — a tiny
+  // aggro radius plus the existing 'melee' behavior (which already falls
+  // back to a core-beeline whenever nothing is within aggroRadius) gives
+  // exactly this without needing a new behavior implementation. High speed,
+  // low HP: it's meant to arrive early and punish a player who's drifted
+  // from the base, not to fight.
+  rusher: {
+    key: 'rusher',
+    shape: 'chevron',
+    color: '#b366ff',
+    radius: 13,
+    hp: 18,
+    speed: 180,
+    meleeDamage: 12,
+    meleeRate: 1,
+    aggroRadius: 120,
+    anchor: 'core',
+    leashRadius: 0,
+    coinsMin: 2,
+    coinsMax: 3,
+    behavior: 'melee',
+  },
+  // Bomber: slow, tanky, harmless until damaged. Also uses 'melee' behavior
+  // for movement (approach core/player, stand at contact range) — it simply
+  // has no melee component attached (meleeDamage: 0) so it never actually
+  // hits anything; its real "attack" (the fuse/detonation state machine) is
+  // driven centrally every tick in game.ts (see BomberAttack on Entity),
+  // because it must keep ticking even after the bomber itself has died.
+  bomber: {
+    key: 'bomber',
+    shape: 'squatSquare',
+    color: '#7a1fd9',
+    radius: 20,
+    hp: 60,
+    speed: 55,
+    meleeDamage: 0,
+    meleeRate: 0,
+    // Not specified by the brief; picked moderate — close enough to matter,
+    // not so close it never gets a chance to be shot mid-crowd before
+    // reaching melee range. Flagged as a likely rebalance candidate.
+    aggroRadius: 200,
+    anchor: 'core',
+    leashRadius: 0,
+    coinsMin: 4,
+    coinsMax: 5,
+    behavior: 'melee',
+    bomber: {
+      fuseSec: 3,
+      detonationDamage: 60,
+      detonationRadius: 140,
+      enemyFalloff: ENEMY_AOE_FALLOFF,
+    },
+  },
+  // Healer: hangs back behind the horde, heals nearby enemies (never
+  // itself), flees when threatened. See entities/behaviors/healer.ts.
+  healer: {
+    key: 'healer',
+    shape: 'diamond',
+    color: '#c9a3ff',
+    radius: 15,
+    hp: 30,
+    speed: 85,
+    meleeDamage: 0,
+    meleeRate: 0,
+    // Used by updateHealer as the "am I being personally targeted" flee
+    // trigger radius (a player/ally this close counts as an aggressor even
+    // without a discrete recent-hit event) — see DECISIONS.md.
+    aggroRadius: 220,
+    anchor: 'behindHorde',
+    leashRadius: 0,
+    coinsMin: 3,
+    coinsMax: 4,
+    behavior: 'healer',
+    healer: {
+      healRadius: 250,
+      healRate: 6,
+    },
+  },
+  // Fire mage: kites like the archer but lobs an arcing fireball that leaves
+  // burning ground — the real weapon is the ground effect (area denial),
+  // not the modest direct-impact damage.
+  fireMage: {
+    key: 'fireMage',
+    shape: 'concaveQuad',
+    color: '#9d4dff',
+    radius: 18,
+    hp: 28,
+    speed: 75,
+    meleeDamage: 0,
+    meleeRate: 0,
+    aggroRadius: 450,
+    anchor: 'core',
+    leashRadius: 0,
+    coinsMin: 3,
+    coinsMax: 4,
+    behavior: 'fireMage',
+    fireMage: {
+      range: 450,
+      projectileSpeed: 380,
+      rate: 0.4, // one cast per 2.5s — slower than the archer, the ground effect does the real work over time
+      damage: 20,
+      impactRadius: 100,
+      burnDuration: 6,
+      burnDps: 5,
+      burnRadius: 100,
+      enemyFalloff: ENEMY_AOE_FALLOFF,
     },
   },
   boss: {
     key: 'boss',
     shape: 'hexagon',
-    color: '#8b0000', // dark red
+    color: '#7a0dd6',
     radius: 45,
     hp: 1200,
     speed: 70,
     meleeDamage: 25,
     meleeRate: 1,
     aggroRadius: 250,
+    anchor: 'core',
+    leashRadius: 0,
     coinsMin: 25,
     coinsMax: 25,
     behavior: 'melee',
@@ -358,6 +601,8 @@ export interface WaveDef {
   wave: number;
   grunts: number;
   archers: number;
+  rushers: number;
+  bombers: number;
   boss: number;
   durationSec: number;
   intermissionSec: number;
@@ -368,17 +613,38 @@ export interface WaveDef {
 // price curve assumes 3-minute waves' worth of coin income per wave.
 //
 // *** TEMPORARY TESTING VALUE ***: durationSec is currently shortened to 60
-// for faster dev iteration (so a full 5-wave run doesn't take 20 minutes).
-// Flip every `durationSec: 60` below back to `180` to restore the designed
-// pacing — shop prices auto-scale off WAVES via
+// for faster dev iteration (so a full run doesn't take forever). Flip every
+// `durationSec: 60` below back to `180` to restore the designed pacing —
+// shop prices auto-scale off WAVES via
 // `economy/shop.ts::waveDurationScaleFactor()`, so no other change is needed
 // when you do. See DECISIONS.md for the scaling rationale.
+//
+// Phase 1 (full-game): extended from the prototype's 5 waves to 13 —
+// enough to exercise generation progression through violet/indigo/blue and
+// into green (wave 13), and to reach wave 9's generation-mixing rule, per
+// the Phase 1 brief. This is explicitly NOT the full 25-wave
+// budget/mix-percentage economy (that's Phase 3 scope) — counts past wave 5
+// are a reasonable-but-not-final linear-ish ramp, picked only to prove the
+// generation system and the 4 new archetypes actually work end-to-end.
+// Rusher intros wave 6, bomber wave 9 (matching the brief's per-archetype
+// intro waves); healer (wave 13) and fire mage (wave 17) are fully
+// implemented and spawnable via the F6 debug key from Phase 1 on, but wave
+// 13 here doesn't yet schedule the healer in the normal spawn budget — that
+// wiring is Phase 3 work, done once the full 25-wave/mix-table exists.
 export const WAVES: WaveDef[] = [
-  { wave: 1, grunts: 24, archers: 0, boss: 0, durationSec: 60, intermissionSec: 60 },
-  { wave: 2, grunts: 34, archers: 0, boss: 0, durationSec: 60, intermissionSec: 60 },
-  { wave: 3, grunts: 30, archers: 12, boss: 0, durationSec: 60, intermissionSec: 60 },
-  { wave: 4, grunts: 36, archers: 18, boss: 0, durationSec: 60, intermissionSec: 60 },
-  { wave: 5, grunts: 40, archers: 24, boss: 1, durationSec: 60, intermissionSec: 60 },
+  { wave: 1, grunts: 24, archers: 0, rushers: 0, bombers: 0, boss: 0, durationSec: 60, intermissionSec: 60 },
+  { wave: 2, grunts: 34, archers: 0, rushers: 0, bombers: 0, boss: 0, durationSec: 60, intermissionSec: 60 },
+  { wave: 3, grunts: 30, archers: 12, rushers: 0, bombers: 0, boss: 0, durationSec: 60, intermissionSec: 60 },
+  { wave: 4, grunts: 36, archers: 18, rushers: 0, bombers: 0, boss: 0, durationSec: 60, intermissionSec: 60 },
+  { wave: 5, grunts: 40, archers: 24, rushers: 0, bombers: 0, boss: 1, durationSec: 60, intermissionSec: 60 },
+  { wave: 6, grunts: 40, archers: 20, rushers: 10, bombers: 0, boss: 0, durationSec: 70, intermissionSec: 60 },
+  { wave: 7, grunts: 42, archers: 22, rushers: 12, bombers: 0, boss: 0, durationSec: 70, intermissionSec: 60 },
+  { wave: 8, grunts: 44, archers: 24, rushers: 14, bombers: 0, boss: 0, durationSec: 70, intermissionSec: 60 },
+  { wave: 9, grunts: 40, archers: 22, rushers: 14, bombers: 8, boss: 0, durationSec: 80, intermissionSec: 60 },
+  { wave: 10, grunts: 42, archers: 24, rushers: 16, bombers: 10, boss: 0, durationSec: 80, intermissionSec: 60 },
+  { wave: 11, grunts: 44, archers: 26, rushers: 18, bombers: 11, boss: 0, durationSec: 80, intermissionSec: 60 },
+  { wave: 12, grunts: 46, archers: 28, rushers: 20, bombers: 12, boss: 0, durationSec: 80, intermissionSec: 60 },
+  { wave: 13, grunts: 48, archers: 30, rushers: 22, bombers: 13, boss: 0, durationSec: 90, intermissionSec: 60 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -436,6 +702,8 @@ export function getWaveDef(waveNumber: number): WaveDef {
     wave: waveNumber,
     grunts: Math.round(base.grunts * budgetScale),
     archers: Math.round(base.archers * budgetScale),
+    rushers: Math.round(base.rushers * budgetScale),
+    bombers: Math.round(base.bombers * budgetScale),
     boss: base.boss,
     durationSec: base.durationSec,
     intermissionSec: base.intermissionSec,
@@ -561,7 +829,7 @@ export const SHOP_ITEMS: ShopItemDef[] = [
 //   - opt-in risk-for-reward difficulty modifier (separate settable value)
 
 export const DEBUG = {
-  spawnCycleTypes: ['grunt', 'archer', 'boss'] as const,
+  spawnCycleTypes: ['grunt', 'archer', 'rusher', 'bomber', 'healer', 'fireMage', 'boss'] as const,
 };
 
 // ---------------------------------------------------------------------------

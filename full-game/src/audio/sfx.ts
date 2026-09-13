@@ -51,7 +51,12 @@ export type SfxName =
   | 'shopOpen'
   | 'shopPurchase'
   | 'uiHover'
-  | 'uiClick';
+  | 'uiClick'
+  // Phase 1 (full-game) archetype-specific SFX.
+  | 'bomberFuse'
+  | 'bomberDetonate'
+  | 'fireballLaunch'
+  | 'fireballImpact';
 
 const SFX_DEFS: Record<SfxName, SfxLayer[]> = {
   // Rapid, sharp, higher-pitched, short — reads as automatic-rifle "crack".
@@ -116,6 +121,24 @@ const SFX_DEFS: Record<SfxName, SfxLayer[]> = {
   // and click on interactive panel elements (shop rows/tabs).
   uiHover: [{ kind: 'tone', wave: 'sine', freqStart: 500, freqEnd: 650, gain: 0.08, attack: 0.001, decay: 0.03 }],
   uiClick: [{ kind: 'tone', wave: 'triangle', freqStart: 700, freqEnd: 500, gain: 0.16, attack: 0.001, decay: 0.05 }],
+  // Bomber fuse: a single tone whose frequency glides UP over the entire
+  // ~3s fuse duration (see config.ts BOMBER.fuseSec, mirrored here as this
+  // layer's `decay`) — an "unmistakable... rising in pitch" audio tell using
+  // playLayer's existing exponential-frequency-ramp mechanic rather than a
+  // new looping-ping subsystem.
+  bomberFuse: [{ kind: 'tone', wave: 'sawtooth', freqStart: 90, freqEnd: 900, gain: 0.3, attack: 0.05, decay: 3 }],
+  // Detonation: big, low, short — distinct from enemyDeathBoss (lower still,
+  // sharper noise burst) so a chain of bomber detonations reads as
+  // percussive "booms" rather than repeated boss-death stingers.
+  bomberDetonate: [
+    { kind: 'tone', wave: 'sine', freqStart: 140, freqEnd: 25, gain: 0.55, attack: 0.001, decay: 0.5 },
+    { kind: 'noise', gain: 0.4, attack: 0.001, decay: 0.35, filterType: 'lowpass', filterFreq: 400 },
+  ],
+  fireballLaunch: [{ kind: 'tone', wave: 'sawtooth', freqStart: 500, freqEnd: 200, gain: 0.22, attack: 0.001, decay: 0.15 }],
+  fireballImpact: [
+    { kind: 'tone', wave: 'triangle', freqStart: 300, freqEnd: 80, gain: 0.3, attack: 0.001, decay: 0.2 },
+    { kind: 'noise', gain: 0.25, attack: 0.001, decay: 0.25, filterType: 'bandpass', filterFreq: 900, filterQ: 0.8 },
+  ],
 };
 
 let ctx: AudioContext | null = null;

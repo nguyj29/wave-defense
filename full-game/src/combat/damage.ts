@@ -29,8 +29,50 @@ export function applyDamage(target: Entity, amount: number): void {
   if (target.health.hp <= 0) {
     target.health.hp = 0;
     target.dead = true;
+  } else {
+    // Bomber fuse lights on the first hit it SURVIVES (see
+    // maybeIgniteBomberFuse) — a one-shot kill on an unlit bomber never
+    // detonates at all, matching "killing it before the fuse expires
+    // prevents detonation entirely."
+    maybeIgniteBomberFuse(target);
   }
   playDamageSfx(target);
+}
+
+/**
+ * Lighter damage path for continuous/ambient sources (fire mage's burning
+ * ground) — same health mutation and death/bomber-fuse rules as
+ * applyDamage, but skips the discrete-hit feedback (hitFlashTimer reset,
+ * regen-timer reset, per-hit SFX) that would otherwise spam every single
+ * fixed tick a unit stands in the fire. See combat/areaDamage.ts.
+ */
+export function applyDotDamage(target: Entity, amount: number): void {
+  if (!target.health || target.dead) return;
+  if (target.kind === 'player' && godMode) return;
+  target.health.hp -= amount;
+  if (target.health.hp <= 0) {
+    target.health.hp = 0;
+    target.dead = true;
+    playDamageSfx(target);
+  } else {
+    maybeIgniteBomberFuse(target);
+  }
+}
+
+/**
+ * Bomber fuse ignition: the first hit a bomber survives lights its fuse
+ * (fuseSec on its BomberAttack component, snapshotted into fuseTimer),
+ * regardless of damage source — a rifle bullet, an ally's melee hit, or
+ * another bomber's own detonation splash all count, which is what makes
+ * bomber chain-detonation work. See combat/areaDamage.ts + game.ts's
+ * per-tick fuse/detonation driver.
+ */
+function maybeIgniteBomberFuse(target: Entity): void {
+  if (target.archetype === 'bomber' && target.bomber && !target.fuseLit) {
+    target.fuseLit = true;
+    target.fuseTimer = target.bomber.fuseSec;
+    playSfx('bomberFuse');
+  }
 }
 
 /** Faction-agnostic damage-sound (+ best-effort haptics) dispatch, driven by the target's kind/archetype. */
