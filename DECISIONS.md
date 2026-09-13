@@ -391,6 +391,224 @@ Seven changes requested after a play session. Numbers below are all in
   zero near lanes, but only a human playtest will show whether kiting cover
   still feels sufficient).
 
+## Map redesign, lanes, clumped spawns, SFX, and detailed render style (post-MVP pass 2)
+
+Six changes requested in one pass. Numbers below are in `src/config.ts` unless noted.
+
+1. **Core color -> blue.** `CORE.color = '#3b6fe0'` (new field, was a hardcoded
+   `'#5ec96a'` string in `entities/factory.ts::createCore`), a medium blue
+   chosen to read clearly against the forest green ground, the gray concrete
+   lanes, and the brown walls — nothing else on the map competes for that hue.
+
+2. **Base moved to bottom-middle; wall pen rebuilt around it.**
+   `CORE.x/y` are now `WORLD.width/2, WORLD.height - 220` (same 220-unit edge
+   margin the old corner base used, just centered horizontally instead of
+   flush to the west edge). The old two-segment L-shaped wall (which only
+   made sense for a corner) is replaced with a symmetric "pen": one wall
+   running east-west `BASE.wallSetback` (260) units north of the core,
+   spanning `CORE.x -/+ BASE.wallHalfSpan` (750, so 1500 units total), broken
+   by **three** gaps (`BASE.gapOffsets = [-400, 0, +400]`, each `gapWidth`
+   120 wide) — one per active spawn lane — plus two side walls dropping
+   straight down from the north wall's ends to the world's south edge, which
+   closes off flanking around the sides (the base needs no south wall of its
+   own since it already sits flush against the world edge). `world/map.ts`
+   derives every rectangle from `BASE`/`CORE` config rather than hardcoding
+   coordinates, so retuning the pen size/gap count later is a config edit.
+   **Why three gaps instead of the spec's suggested one-or-two**: three
+   spawn points (top-left/top-middle/top-right) each getting its own gap
+   gives a completely unambiguous lane-to-gap mapping (see lanes below) with
+   no forking or awkward diagonal merging, and three medium chokepoints
+   (360 of 1500 wall units open, 24%) still leaves the wall doing most of the
+   fencing — it isn't materially "leakier" than the old single ~120-of-740
+   gap ratio. This is the judgment call most likely to want revisiting after
+   watching a real wave stream through it (does one gap read as too crowded,
+   are all three gaps used evenly, etc).
+3. **Data-driven spawn points, with the 25-wave game's unlock gating built
+   in now.** `world/map.ts::SPAWN_POINTS` is `{id, x, y, unlockWave}[]`:
+   `top-left`/`top-middle`/`top-right` at `unlockWave: 1` (always on),
+   `mid-left`/`mid-right` (level with the base on the far west/east edges) at
+   `unlockWave: 15` — an explicit, documented placeholder for the planned
+   25-wave game, not a tuned value; nothing about *this* 5-wave prototype
+   depends on 15 specifically, it just needs to be higher than 5.
+   `activeSpawnPoints(waveNumber)` filters by `unlockWave <= waveNumber`
+   (falling back to the first spawn point if the filter ever produced an
+   empty list, as a defensive guard) and both `SpawnDirector` and
+   `obstacles.ts`'s clear-zone/lane logic consume that filtered list — so
+   unlocking mid-left/mid-right later really is a one-line data edit
+   (`unlockWave: 15` -> whatever wave), no code path to touch.
+4. **Concrete lanes + patchy forest instead of uniform scatter.** Each
+   wave-1 spawn point gets a straight `Lane` (`world/map.ts::LANE_SEGMENTS`)
+   to its assigned gap center (`LANES.width = 180`, inside the requested
+   150-200 range — picked at the wide end since 3 lanes converge close
+   together near the pen and a narrower width made the middle lane's
+   obstacle-free strip visually pinch right at the gap mouth).
+   `world/obstacles.ts` excludes placement within `width/2` of any lane
+   (`distToSegment`) in addition to the existing base-pen and per-spawn-point
+   clear zones, and `render/renderer.ts::drawLanes` paints a gray strip (plus
+   a dashed centerline) under the ground grid so the roads read visually,
+   not just mechanically. Forest placement also changed from pure uniform
+   rejection-sampling to **patch-based clumping**
+   (`OBSTACLES.patchCount = 6`, `patchRadius = 420`): 6 patch centers are
+   seeded away from the base and >=`laneWidth/2 + 80` from every lane, then
+   85% of trees/rocks (`scatterFraction = 0.15` is the uniform remainder, so
+   the transition between patch and open ground doesn't look like a hard
+   cutout) sample a random point within a random patch's radius instead of
+   the whole map — this is what produces the "green patches off to the
+   sides" look instead of a scattered-everywhere thicket. Density was cut
+   again on top of that (`treeCount` 65->46, `rockCountMin` 22->16) since
+   lanes alone already open up the approach paths considerably; rock count
+   again cut proportionally less than trees to preserve archer-kiting cover
+   near the patches. The seeded RNG (`WORLD.seed`) and rejection-sampling
+   approach are unchanged, so layout is still fully reproducible.
+5. **Spawner/shop/player positions updated for the new base shape.**
+   `SPAWNER_POSITIONS` moved to `CORE.x -/+ 220, CORE.y - 140` (symmetric,
+   inside the pen, clear of the shop marker); `SHOP.marker` moved to
+   `CORE.x + 160, CORE.y - 70` (also inside the pen). `game.ts`'s player
+   spawn (`CORE.x + 60, CORE.y - 60`) was left as a relative offset from
+   `CORE`, which — since `CORE` itself moved — automatically lands inside
+   the new pen with no change needed; verified visually (see below).
+
+6. **Clumped wave spawning**, `waves/spawnDirector.ts`: replaced the old
+   "spawn one unit the instant the accumulator crosses 1, round-robin every
+   corner one spawn at a time" discharge with a **clump-then-pause** cycle
+   from one spawn point at a time. The adaptive rate math (`smoothedKillRate`
+   -> `normalizedTarget` -> `currentRate` between base/max, with the
+   existing ramp/hysteresis) is completely untouched — it still controls how
+   much spawn "budget" accumulates per second. What changed is how that
+   budget discharges: it accumulates toward `clumpTarget` units (3-6,
+   `SPAWN_DIRECTOR.clumpSizeMin/Max`, linearly interpolated by the same
+   `normalizedTarget` 0..1 that drives `currentRate`) from the single
+   currently-selected spawn point; once the clump is spawned, the spawn
+   point rotates to the next one in `activeSpawnPoints(wave.wave)` and a
+   `pauseSecMin..pauseSecMax` (1-3s) pause opens before the next clump starts
+   accumulating — **higher pressure means both bigger clumps and shorter
+   pauses** (linearly, in opposite directions across the same
+   `normalizedTarget`), so the "distinct bursts from one point at a time"
+   read gets more intense under load instead of degenerating into an
+   everywhere-at-once trickle the way a higher raw rate alone would. The
+   accumulator is reset to 0 when a clump ends (rather than left to carry
+   over into the pause) specifically so the clump right after a pause
+   doesn't fire as one oversized burst on top of its own fresh
+   `clumpTarget` — this is the detail most likely to need retuning if clumps
+   feel front-loaded in practice. Boss telegraph/spawn timing, `aliveCap`,
+   and per-wave `grunts`/`archers` budgets are all unchanged — only pacing
+   and which spawn point is used changed. Verified via a scripted Playwright
+   run driving the live `SpawnDirector.debugSnapshot()`: wave 1 opened with
+   3 grunts from `top-left` (`clumpProgress` climbing 0->1->2->3), then
+   `activeSpawnPointId` flipped to `top-middle` with `pauseTimer` counting
+   down from ~2.6s — exactly the intended cycle.
+   The F7 debug readout (`ui/debugOverlay.ts`) gained the new state:
+   `activeSpawnPointId` and either `clump: N/target` (while accumulating) or
+   `paused: N.Ns` (while between clumps), replacing nothing — the existing
+   fields (`smoothedKillRate`, `currentRate`, budget, alive/cap, wave time)
+   are unchanged.
+
+7. **Procedural sound effects**, new `src/audio/sfx.ts` module (Web Audio
+   API only — oscillators + a shared reusable white-noise buffer, no
+   external audio files, per the "hobby project, synthesized assets are
+   fine" note). `playSfx(name, volume?)` is the entire public API; every
+   sound is a `SfxLayer[]` entry in one `SFX_DEFS` config table (tone-sweep
+   layers: waveform/freqStart/freqEnd/gain/attack/decay/delay; noise-burst
+   layers: same envelope shape plus a biquad filter type/freq) so adding a
+   15th sound is a data entry, never a new scattered `new OscillatorNode()`
+   call in gameplay code. Implemented: `rifleShot` (sawtooth + highpass
+   noise crack, short/high), `pistolShot` (square + lowpass noise thump,
+   punchier/lower/single-shot), `reload` (two delayed short square-wave
+   clicks), `enemyHit` (short thud, survives), `enemyDeathGrunt`/
+   `enemyDeathArcher` (descending tones at two pitches) and
+   `enemyDeathBoss` (bigger: lower sine + a long lowpass noise rumble
+   underneath), `allySummon` (two-note rising sine "cast"), `allyHit` (short
+   triangle-wave thwack when an ally's melee lands), `playerHurt` (sawtooth +
+   noise), `coreHurt` (deliberately lower/deeper than `playerHurt`, plus a
+   second delayed thud so it reads as an "alarm" double-hit — the explicit
+   ask was a distinct base-under-attack audio cue independent of watching
+   the HP bar), `coinPickup` (bright rising sine blip), `shopOpen`/
+   `shopPurchase` (soft rise / two-note cash blip). Wired at the existing
+   faction-agnostic call sites rather than duplicated per-caller:
+   `combat/damage.ts::applyDamage` dispatches the hit/death sound purely
+   from `target.kind`/`archetype`/`isBoss` (so it automatically covers
+   bullets, arrows, and melee alike — one function, no new call sites needed
+   in `projectiles.ts` or the enemy AI), `combat/weapons.ts::tryMeleeAttack`
+   plays `allyHit` only when `attacker.kind === 'ally'`, and
+   `combat/playerWeapons.ts`/`game.ts` cover the rest (fire, reload, summon
+   cast, coin pickup, shop open/buy). **Autoplay policy**: `initAudio()`
+   creates/resumes the shared `AudioContext` and is called from `Input`'s
+   first `keydown`/`mousedown` listeners (`src/input.ts`) — i.e. the same
+   first user gesture that already exists before the game does anything, so
+   there's no separate "click to enable audio" prompt needed; `playSfx()`
+   itself silently no-ops if the context is still suspended (e.g. a
+   pre-gesture debug call) rather than throwing.
+   **Explicitly skipped, per the brief's own "use your judgment" framing**:
+   an enemy-spawn "blip" (spawns now happen in clumps of 3-6 within a
+   fraction of a second — a blip per spawn would be a rapid-fire buzz, not a
+   clear cue) and footstep/movement sounds for any entity (the brief itself
+   flagged the noise/throttling risk at ~300 entities; a single per-player
+   footstep tick was considered but skipped for this pass since it's a pure
+   "feel" addition that's easy to add later once the other SFX have been
+   heard and judged, rather than adding one more unverified feel-call sound
+   in the same pass as everything else).
+
+8. **Alternate "in-house sprite" detailed render style**, new
+   `src/render/rendererDetailed.ts`, toggled at runtime with **F10**
+   (documented in the F1 debug-overlay legend). Both styles are Canvas2D
+   shape primitives only (no image/sprite assets) and share the existing
+   camera/world transform and `interpolatedPos` helper from
+   `render/renderer.ts`; the detailed path adds, per the brief: a soft drop
+   shadow ellipse under every non-projectile/coin entity, a lighter
+   "highlight" patch and a darker rim stroke on every shape (circle/
+   triangle/hexagon/square), an inner beveled hexagon for the boss/core, a
+   two-tone beveled look on wall segments, layered-circle tree canopies
+   (3 overlapping tones instead of one flat disc, matching the "layered
+   circles for foliage" suggestion) and rocks with a couple of darker/
+   lighter triangular facets fanned from center. **Performance**: rather
+   than creating `CanvasGradient` objects per entity per frame (the brief's
+   flagged risk at ~300 entities), shading uses a cheap string-math
+   `shade(hex, percent)` helper (parse `#rrggbb`, offset each channel, only
+   ever run against a handful of distinct entity/obstacle colors) plus flat
+   overlapping fills for the "highlight" — no gradient allocation in the hot
+   path at all. **Default: `detailed`** — it was judged to look more
+   polished in the side-by-side screenshot comparison taken during
+   verification (see below) while staying well inside the "clean, chunky,
+   zombs.io-ish" brief; F10 switches back to the original flat style
+   instantly for comparison, and the debug overlay (F1) shows which style is
+   active. This default is a pure aesthetic call and the one most likely to
+   want the user's own opinion once they've actually played with both.
+
+### Verification for this pass
+
+- `npm run build` (tsc + vite build) passes clean.
+- Playwright smoke run against `npm run dev` (headless Chromium): game boots
+  to `'playing'` phase at the new base position (`core.x/y` = `1600, 2980` on
+  the 3200x3200 world, player spawns inside the pen at `1660, 2920`) with no
+  `pageerror`/`console.error` events across the whole run (weapon fire,
+  summon cast, coin pickup and shop-adjacent code paths were all exercised,
+  so every new `playSfx()` call site ran without throwing — this confirms
+  the *code path* is exception-free, not that the audio itself sounds
+  right, which needs a human listening).
+- Drove `SpawnDirector.debugSnapshot()` directly over ~11 simulated seconds
+  of wave 1 and confirmed the clump-then-pause cycle end to end: 3 grunts
+  spawned from `top-left` (`clumpProgress` 0->1->2->3 against
+  `clumpTarget: 3`), then `activeSpawnPointId` switched to `top-middle` and
+  `pauseTimer` counted down from ~2.6s toward 0 before the next clump would
+  start — matches the intended "clump, pause, rotate" read, not a smooth
+  trickle.
+- Took side-by-side screenshots (zoomed out over the base) confirming: the
+  core renders blue with the new pen wall/3-gap layout, all three lanes
+  visibly converge into their respective gaps as gray concrete strips
+  distinct from the green ground, spawners and the shop marker sit inside
+  the pen, and forest/rock obstacles read as clumped patches off to the
+  sides of the lanes rather than uniform scatter — both in the flat and the
+  detailed render style (F10 toggles between the two screenshots cleanly).
+- **Did not verify** (needs a human): whether the SFX actually sound good /
+  "Roblox-punchy" as intended — only that every trigger site fires without
+  a JS exception and Web Audio API calls are well-formed; whether 3 gaps at
+  120 units each feel like the right choke-point pressure once a full
+  45-enemy wave streams through visually (only a small forced clump was
+  watched, not a full wave); whether the detailed render style is in fact
+  the preferred default over flat; and the lane width / patch density
+  "feel" of openness the brief asked for, which is inherently a subjective
+  call.
+
 ## Acceptance-criteria verification note
 
 See the final chat report for which of the spec's 16 acceptance criteria

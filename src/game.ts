@@ -53,6 +53,8 @@ import {
   drawWorldBackground,
   drawWorldBounds,
 } from './render/renderer.ts';
+import { drawEntityDetailed, drawObstaclesDetailed, drawWallsDetailed } from './render/rendererDetailed.ts';
+import { playSfx } from './audio/sfx.ts';
 import { FlowField, type Pathfinder } from './world/flowfield.ts';
 import { SPAWNER_POSITIONS } from './world/map.ts';
 import { generateObstacles, type Obstacle } from './world/obstacles.ts';
@@ -69,6 +71,11 @@ interface DebugState {
   godMode: boolean;
   spawnCycleIndex: number;
 }
+
+// F10 toggles between the two render styles for comparison (see
+// render/renderer.ts vs render/rendererDetailed.ts, and DECISIONS.md for why
+// 'detailed' is the default).
+type RenderStyle = 'flat' | 'detailed';
 
 function approach(current: number, target: number, maxDelta: number): number {
   if (current < target) return Math.min(current + maxDelta, target);
@@ -115,6 +122,7 @@ export class Game {
     godMode: false,
     spawnCycleIndex: 0,
   };
+  renderStyle: RenderStyle = 'detailed';
   private rateHistory: number[] = [];
   private fps = 60;
   private frameTimes: number[] = [];
@@ -211,6 +219,7 @@ export class Game {
       this.simulate(dt);
       if (this.input.wasPressed('KeyE') && this.distToShopMarker() <= SHOP.interactRadius) {
         this.phase = 'shop';
+        playSfx('shopOpen');
       }
     }
 
@@ -256,6 +265,7 @@ export class Game {
       this.core.health!.maxHp = newMax;
       this.core.health!.hp += delta;
     }
+    playSfx('shopPurchase');
   }
 
   private simulate(dt: number): void {
@@ -368,6 +378,7 @@ export class Game {
       if (d <= COINS.pickupRadius) {
         this.coins += c.coinValue ?? 0;
         c.dead = true;
+        playSfx('coinPickup', 0.6);
       } else if (d <= COINS.magnetRadius) {
         const inv = 1 / (d || 1);
         c.x += dx * inv * COINS.magnetSpeed * dt;
@@ -444,6 +455,7 @@ export class Game {
       this.entities.push(ally);
     }
     this.summonCooldownRemaining = summonCooldownSeconds(this.shopLevels);
+    playSfx('allySummon');
   }
 
   private spawnEnemyFromRequest(kind: SpawnKind, x: number, y: number): void {
@@ -464,6 +476,7 @@ export class Game {
     }
     if (input.wasPressed('F7')) this.debug.spawnReadout = !this.debug.spawnReadout;
     if (input.wasPressed('F9')) printDevReadout();
+    if (input.wasPressed('F10')) this.renderStyle = this.renderStyle === 'flat' ? 'detailed' : 'flat';
 
     if (this.phase !== 'playing') return;
 
@@ -520,9 +533,13 @@ export class Game {
       ctx.translate(-Math.cos(this.playerWeaponState.recoilAngle) * kick, -Math.sin(this.playerWeaponState.recoilAngle) * kick);
     }
 
+    const detailed = this.renderStyle === 'detailed';
+
     drawWorldBackground(ctx, this.camera);
-    drawObstacles(ctx, this.camera, this.obstacles);
-    drawWalls(ctx, this.camera);
+    if (detailed) drawObstaclesDetailed(ctx, this.camera, this.obstacles);
+    else drawObstacles(ctx, this.camera, this.obstacles);
+    if (detailed) drawWallsDetailed(ctx, this.camera);
+    else drawWalls(ctx, this.camera);
     drawSpawners(ctx, this.camera, this.spawners);
     drawShopMarker(ctx, this.camera);
 
@@ -537,7 +554,8 @@ export class Game {
     }
     for (const e of this.entities) {
       if (e.dead || e.kind === 'coin') continue;
-      drawEntity(ctx, this.camera, e, alpha);
+      if (detailed) drawEntityDetailed(ctx, this.camera, e, alpha);
+      else drawEntity(ctx, this.camera, e, alpha);
     }
 
     if (this.debug.flowField) drawFlowFieldDebug(ctx, this.camera, this.pathfinder as FlowField);
@@ -602,6 +620,7 @@ export class Game {
         renderMs: this.lastRenderMs,
         godMode: this.debug.godMode,
         spawnCycleType: DEBUG.spawnCycleTypes[this.debug.spawnCycleIndex],
+        renderStyle: this.renderStyle,
       };
       drawDebugOverlay(ctx, debugData);
     }
@@ -617,6 +636,10 @@ export class Game {
         aliveCap: SPAWN_DIRECTOR.aliveCap,
         waveTimeRemaining: this.waveManager.phase === 'running' ? this.waveManager.timeRemaining : 0,
         history: this.rateHistory,
+        activeSpawnPointId: snap.activeSpawnPointId,
+        clumpProgress: snap.clumpProgress,
+        clumpTarget: snap.clumpTarget,
+        pauseTimer: snap.pauseTimer,
       };
       drawSpawnReadout(ctx, w, readout);
     }

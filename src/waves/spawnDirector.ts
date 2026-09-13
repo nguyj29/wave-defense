@@ -1,5 +1,5 @@
-import { ENEMY_SPAWN_CORNERS } from '../world/map.ts';
-import { SPAWN_DIRECTOR, type WaveDef } from '../config.ts';
+import { activeSpawnPoints, type SpawnPoint } from '../world/map.ts';
+import { CORE, SPAWN_DIRECTOR, type WaveDef } from '../config.ts';
 
 export type SpawnKind = 'grunt' | 'archer' | 'boss';
 
@@ -9,10 +9,23 @@ export interface SpawnRequest {
   y: number;
 }
 
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
 /**
  * Adaptive spawn-rate director for one wave. Tracks a smoothed kill rate and
  * lets it (not raw kill events) move the spawn rate between a baseline and a
  * max, with asymmetric ramp lag and hysteresis so the rate doesn't flap.
+ *
+ * Spawns are discharged in clumps rather than a steady trickle: budget
+ * accumulates (at `currentRate`, same as before) toward a per-clump target
+ * count, all from one currently-selected spawn point; once that clump is
+ * done, the spawn point rotates and a brief pause opens before the next
+ * clump starts accumulating. Clump size and pause length are both driven by
+ * the same normalized kill-rate pressure that drives currentRate — see
+ * SPAWN_DIRECTOR.clumpSizeMin/Max and pauseSecMin/Max in config.ts.
+ *
  * F7's debug readout mirrors this object's public fields directly.
  */
 export class SpawnDirector {
@@ -22,7 +35,12 @@ export class SpawnDirector {
   private normalizedTarget = 0; // last accepted normalized target (post-hysteresis)
   currentRate = SPAWN_DIRECTOR.baseRate;
   private spawnAccumulator = 0;
-  private cornerIndex = 0;
+
+  private spawnPoints: SpawnPoint[];
+  private spawnPointIndex = 0;
+  private clumpTarget: number;
+  private clumpSpawnedInClump = 0;
+  private pauseTimer = 0;
 
   spawnedGrunts = 0;
   spawnedArchers = 0;
@@ -34,6 +52,8 @@ export class SpawnDirector {
 
   constructor(wave: WaveDef) {
     this.wave = wave;
+    this.spawnPoints = activeSpawnPoints(wave.wave);
+    this.clumpTarget = SPAWN_DIRECTOR.clumpSizeMin;
   }
 
   get budgetSpent(): number {
@@ -78,7 +98,7 @@ export class SpawnDirector {
 
     const requests: SpawnRequest[] = [];
 
-    // Boss telegraph/spawn timing, independent of the accumulator above.
+    // Boss telegraph/spawn timing, independent of the clump/pause cycle.
     if (this.wave.boss > 0 && !this.bossSpawned && !this.bossWarningActive) {
       const spawnedSoFar = this.spawnedGrunts + this.spawnedArchers;
       const nonBossBudget = this.wave.grunts + this.wave.archers;
@@ -96,27 +116,47 @@ export class SpawnDirector {
       }
     }
     if (this.bossReadyToSpawn && !this.bossSpawned) {
-      const corner = this.nextCorner();
-      requests.push({ kind: 'boss', x: corner.x, y: corner.y });
+      const sp = this.currentSpawnPoint();
+      requests.push({ kind: 'boss', x: sp.x, y: sp.y });
       this.bossSpawned = true;
       this.bossWarningActive = false;
       this.bossReadyToSpawn = false;
     }
 
     if (aliveCount < SPAWN_DIRECTOR.aliveCap) {
-      this.spawnAccumulator += this.currentRate * dt;
-      while (this.spawnAccumulator >= 1 && aliveCount + requests.length < SPAWN_DIRECTOR.aliveCap) {
-        const kind = this.pickNextKind();
-        if (!kind) break;
-        this.spawnAccumulator -= 1;
-        const corner = this.nextCorner();
-        requests.push({ kind, x: corner.x, y: corner.y });
-        if (kind === 'grunt') this.spawnedGrunts++;
-        else if (kind === 'archer') this.spawnedArchers++;
+      if (this.pauseTimer > 0) {
+        this.pauseTimer -= dt;
+      } else {
+        this.spawnAccumulator += this.currentRate * dt;
+        while (this.spawnAccumulator >= 1 && aliveCount + requests.length < SPAWN_DIRECTOR.aliveCap) {
+          const kind = this.pickNextKind();
+          if (!kind) break;
+          this.spawnAccumulator -= 1;
+          const sp = this.currentSpawnPoint();
+          requests.push({ kind, x: sp.x, y: sp.y });
+          if (kind === 'grunt') this.spawnedGrunts++;
+          else if (kind === 'archer') this.spawnedArchers++;
+          this.clumpSpawnedInClump++;
+          if (this.clumpSpawnedInClump >= this.clumpTarget) {
+            this.advanceToNextClump();
+            break; // stop discharging this tick — the pause takes over
+          }
+        }
       }
     }
 
     return requests;
+  }
+
+  /** Rotates to the next spawn point and opens a brief pause before the next clump accumulates. */
+  private advanceToNextClump(): void {
+    this.spawnPointIndex = (this.spawnPointIndex + 1) % this.spawnPoints.length;
+    this.clumpSpawnedInClump = 0;
+    this.clumpTarget = Math.round(lerp(SPAWN_DIRECTOR.clumpSizeMin, SPAWN_DIRECTOR.clumpSizeMax, this.normalizedTarget));
+    this.pauseTimer = lerp(SPAWN_DIRECTOR.pauseSecMax, SPAWN_DIRECTOR.pauseSecMin, this.normalizedTarget);
+    // Drop any banked accumulator so the clump right after the pause doesn't
+    // fire as one extra-large instant burst on top of its own clumpTarget.
+    this.spawnAccumulator = 0;
   }
 
   private pickNextKind(): 'grunt' | 'archer' | null {
@@ -135,14 +175,13 @@ export class SpawnDirector {
     this.bossSpawned = true;
     this.bossWarningActive = false;
     this.bossReadyToSpawn = false;
-    const corner = this.nextCorner();
-    return { kind: 'boss', x: corner.x, y: corner.y };
+    const sp = this.currentSpawnPoint();
+    return { kind: 'boss', x: sp.x, y: sp.y };
   }
 
-  private nextCorner(): { x: number; y: number } {
-    const c = ENEMY_SPAWN_CORNERS[this.cornerIndex % ENEMY_SPAWN_CORNERS.length];
-    this.cornerIndex++;
-    return c;
+  private currentSpawnPoint(): { x: number; y: number } {
+    if (this.spawnPoints.length === 0) return { x: CORE.x, y: 0 };
+    return this.spawnPoints[this.spawnPointIndex % this.spawnPoints.length];
   }
 
   debugSnapshot() {
@@ -154,6 +193,10 @@ export class SpawnDirector {
       budgetTotal: this.budgetTotal,
       bossWarningActive: this.bossWarningActive,
       elapsed: this.elapsed,
+      activeSpawnPointId: this.spawnPoints[this.spawnPointIndex % Math.max(1, this.spawnPoints.length)]?.id ?? '',
+      clumpProgress: this.clumpSpawnedInClump,
+      clumpTarget: this.clumpTarget,
+      pauseTimer: Math.max(0, this.pauseTimer),
     };
   }
 }

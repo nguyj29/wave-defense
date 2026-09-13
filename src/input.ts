@@ -1,3 +1,5 @@
+import { initAudio } from './audio/sfx.ts';
+
 // Keyboard/mouse input state. Polled by the game loop rather than driving
 // logic directly from events, so fixed-timestep update sees a stable snapshot.
 export class Input {
@@ -11,6 +13,10 @@ export class Input {
 
   constructor(target: HTMLElement) {
     window.addEventListener('keydown', (e) => {
+      // Web Audio autoplay policy: an AudioContext can only start/resume
+      // after a user gesture — the first keypress or click of the session
+      // unlocks sound for every playSfx() call afterward.
+      initAudio();
       if (!this.keysDown.has(e.code)) this.keysPressed.add(e.code);
       this.keysDown.add(e.code);
       // Prevent page scroll on space/arrow keys etc.
@@ -27,6 +33,7 @@ export class Input {
       this.mouseY = e.clientY - rect.top;
     });
     target.addEventListener('mousedown', (e) => {
+      initAudio();
       if (e.button === 0) {
         this.mouseDown = true;
         this.mousePressedFlag = true;

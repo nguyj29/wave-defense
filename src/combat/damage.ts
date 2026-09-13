@@ -1,5 +1,6 @@
 import { PLAYER } from '../config.ts';
 import type { Entity } from '../entities/types.ts';
+import { playSfx } from '../audio/sfx.ts';
 
 // Debug-only global toggle (F5). Kept as a tiny module-level flag rather than
 // threading a "debug" object through every combat call site.
@@ -27,6 +28,24 @@ export function applyDamage(target: Entity, amount: number): void {
   if (target.health.hp <= 0) {
     target.health.hp = 0;
     target.dead = true;
+  }
+  playDamageSfx(target);
+}
+
+/** Faction-agnostic damage-sound dispatch, driven by the target's kind/archetype. */
+function playDamageSfx(target: Entity): void {
+  if (target.kind === 'enemy') {
+    if (target.dead) {
+      if (target.isBoss) playSfx('enemyDeathBoss');
+      else if (target.archetype === 'archer') playSfx('enemyDeathArcher');
+      else playSfx('enemyDeathGrunt');
+    } else {
+      playSfx('enemyHit');
+    }
+  } else if (target.kind === 'player') {
+    playSfx('playerHurt');
+  } else if (target.kind === 'core') {
+    playSfx('coreHurt');
   }
 }
 

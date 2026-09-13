@@ -8,12 +8,13 @@ export interface DebugData {
   renderMs: number;
   godMode: boolean;
   spawnCycleType: string;
+  renderStyle: string;
 }
 
 export function drawDebugOverlay(ctx: CanvasRenderingContext2D, d: DebugData): void {
   ctx.save();
   ctx.fillStyle = 'rgba(0,0,0,0.6)';
-  ctx.fillRect(8, 8, 230, 150);
+  ctx.fillRect(8, 8, 230, 164);
   ctx.fillStyle = '#7CFC00';
   ctx.font = '12px monospace';
   ctx.textAlign = 'left';
@@ -24,10 +25,12 @@ export function drawDebugOverlay(ctx: CanvasRenderingContext2D, d: DebugData): v
     `update: ${d.updateMs.toFixed(2)}ms  render: ${d.renderMs.toFixed(2)}ms`,
     `god mode: ${d.godMode ? 'ON' : 'off'}`,
     `F6 spawn type: ${d.spawnCycleType}`,
+    `render style: ${d.renderStyle}`,
     '',
     'F1 overlay  F2 radii  F3 flow field',
     'F4 skip wave  F5 god  F6 spawn+scroll',
     'F7 spawn readout  F8 force boss',
+    'F10 toggle render style',
   ];
   lines.forEach((line, i) => ctx.fillText(line, 16, 16 + i * 14));
   ctx.restore();
@@ -43,11 +46,15 @@ export interface SpawnReadoutData {
   aliveCap: number;
   waveTimeRemaining: number;
   history: number[]; // recent currentRate samples for a rolling graph
+  activeSpawnPointId: string;
+  clumpProgress: number;
+  clumpTarget: number;
+  pauseTimer: number;
 }
 
 export function drawSpawnReadout(ctx: CanvasRenderingContext2D, screenW: number, d: SpawnReadoutData): void {
   const w = 260;
-  const h = 170;
+  const h = 216;
   const x = screenW - w - 8;
   const y = 200;
   ctx.save();
@@ -65,6 +72,8 @@ export function drawSpawnReadout(ctx: CanvasRenderingContext2D, screenW: number,
     `budget: ${d.budgetSpent}/${d.budgetTotal}`,
     `alive: ${d.aliveCount}/${d.aliveCap}`,
     `wave time left: ${d.waveTimeRemaining.toFixed(0)}s`,
+    `spawn point: ${d.activeSpawnPointId}`,
+    d.pauseTimer > 0 ? `paused: ${d.pauseTimer.toFixed(1)}s` : `clump: ${d.clumpProgress}/${d.clumpTarget}`,
   ];
   lines.forEach((line, i) => ctx.fillText(line, x + 8, y + 8 + i * 14));
 

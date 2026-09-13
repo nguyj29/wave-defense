@@ -2,6 +2,7 @@ import type { WorldContext } from '../entities/context.ts';
 import { createProjectile } from '../entities/factory.ts';
 import type { Entity } from '../entities/types.ts';
 import { applyDamage } from './damage.ts';
+import { playSfx } from '../audio/sfx.ts';
 
 /** Ticks every attack cooldown down by dt. Call once per fixed tick before behaviors act. */
 export function tickCooldowns(entities: Entity[], dt: number): void {
@@ -15,6 +16,7 @@ export function tickCooldowns(entities: Entity[], dt: number): void {
 export function tryMeleeAttack(attacker: Entity, target: Entity): boolean {
   if (!attacker.melee || attacker.melee.cooldown > 0) return false;
   applyDamage(target, attacker.melee.damage);
+  if (attacker.kind === 'ally') playSfx('allyHit');
   attacker.melee.cooldown = 1 / attacker.melee.rate;
   return true;
 }

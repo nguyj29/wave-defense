@@ -12,30 +12,50 @@ export const WORLD = {
 };
 
 export const OBSTACLES = {
-  // Reduced from 120/40 (see DECISIONS.md) — the original density read as a
-  // dense thicket rather than scattered forest at this map size.
-  treeCount: 65,
+  // Reduced again for the bottom-middle-base map redesign (see DECISIONS.md):
+  // lanes now keep obstacle-free roads to the base, so overall density needed
+  // to drop further to still read as "open" rather than just "road + thicket".
+  treeCount: 46,
   treeRadius: 18,
-  rockCountMin: 22, // "roughly 22" rocks — still enough cover near lanes for archer-kiting
+  rockCountMin: 16, // still enough cover near lanes for archer-kiting
   rockRadius: [24, 40] as [number, number],
   rockVertsRange: [6, 9] as [number, number],
+  // Forest is placed in a handful of irregular patches off to the sides of
+  // the lanes rather than uniformly across the map (see DECISIONS.md) —
+  // patchCount/patchRadius control how clumped it reads.
+  patchCount: 6,
+  patchRadius: 420,
+  // Fraction of obstacles placed via pure uniform scatter (not clumped into
+  // a patch) so the map doesn't look unnaturally polka-dotted.
+  scatterFraction: 0.15,
 };
 
 export const CORE = {
-  x: 220,
+  // Bottom-middle of the 3200x3200 world (see DECISIONS.md for the map
+  // redesign rationale) — same edge margin (220) the corner base used.
+  x: WORLD.width / 2,
   y: WORLD.height - 220,
   radius: 60,
   maxHp: 1000,
   hpPerLevel: 150,
+  color: '#3b6fe0', // strong medium blue — reads clearly against forest green
 };
 
 export const BASE = {
-  // Two rectangular walls forming an L around the core corner, each with a
-  // gap ~120 units wide that funnels units through a choke point.
+  // A wall "pen" around the base: one wall running east-west north of the
+  // core (three gaps, one per active spawn lane) plus two side walls running
+  // south from its ends down to the world edge, closing off flanking. See
+  // world/map.ts for the derived geometry and DECISIONS.md for why.
   wallThickness: 24,
   gapWidth: 120,
-  // Horizontal wall runs along y = wallY, from x=0 to x=wallLen, with a gap.
-  wallLen: 620,
+  // The north wall sits this far "in front of" (north of) the core.
+  wallSetback: 260,
+  // The north wall spans CORE.x -/+ wallHalfSpan; side walls drop straight
+  // down from its two ends to the world's south edge.
+  wallHalfSpan: 750,
+  // Gap centers, as offsets from CORE.x — one per active spawn point
+  // (top-left / top-middle / top-right), in that order.
+  gapOffsets: [-400, 0, 400] as number[],
   spawnerRadius: 24,
   spawnerCount: 2,
   spawnerOutputBase: 0.1, // spawns/s == 1 per 10s
@@ -47,8 +67,15 @@ export const BASE = {
 };
 
 export const SHOP = {
-  marker: { x: CORE.x + 140, y: CORE.y - 40, radius: 20 },
+  marker: { x: CORE.x + 160, y: CORE.y - 70, radius: 20 },
   interactRadius: 100,
+};
+
+// Concrete lane corridors connecting each active spawn point to the base's
+// nearest wall gap: kept obstacle-free and drawn as a distinct road strip.
+// See world/map.ts (LANES) and DECISIONS.md.
+export const LANES = {
+  width: 180,
 };
 
 export const PLAYER = {
@@ -296,6 +323,18 @@ export const SPAWN_DIRECTOR = {
   hysteresis: 0.05, // deadband on normalized kill rate before rate is allowed to move further
   bossBudgetFraction: 0.6, // spawn boss after 60% of budget spawned...
   bossLatestSec: 120, // ...or at 2:00 mark, whichever first
+  // Clumped spawning (see DECISIONS.md): spawns discharge from one active
+  // spawn point at a time in a burst of clumpSizeMin..clumpSizeMax units,
+  // then that spawn point rotates and a pauseMin..pauseMax second gap opens
+  // before the next clump starts accumulating. Both ranges are linearly
+  // interpolated by the same normalized kill-rate pressure (0..1) that
+  // drives currentRate — higher pressure means bigger clumps *and* shorter
+  // pauses, so the "cycling clumps" read gets more intense exactly when the
+  // adaptive rate would otherwise just spawn faster in a smooth trickle.
+  clumpSizeMin: 3,
+  clumpSizeMax: 6,
+  pauseSecMin: 1, // pause length at max pressure (normalized target == 1)
+  pauseSecMax: 3, // pause length at min pressure (normalized target == 0)
 };
 
 // ---------------------------------------------------------------------------

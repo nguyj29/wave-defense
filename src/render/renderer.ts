@@ -1,7 +1,7 @@
 import type { Camera } from '../camera.ts';
 import { SHOP, WORLD } from '../config.ts';
 import type { Entity } from '../entities/types.ts';
-import { WALL_SEGMENTS } from '../world/map.ts';
+import { LANE_SEGMENTS, WALL_SEGMENTS } from '../world/map.ts';
 import type { Obstacle } from '../world/obstacles.ts';
 import type { AllySpawner } from '../entities/spawnerSystem.ts';
 import type { FlowField } from '../world/flowfield.ts';
@@ -27,11 +27,41 @@ function drawPolygon(ctx: CanvasRenderingContext2D, cx: number, cy: number, radi
     ctx.closePath();
 }
 
+/** Concrete/road-colored strips along each lane corridor, drawn under everything else. */
+export function drawLanes(ctx: CanvasRenderingContext2D, camera: Camera): void {
+  const s = camera.pixelScale;
+  ctx.strokeStyle = '#6d6d6d';
+  ctx.lineCap = 'round';
+  for (const lane of LANE_SEGMENTS) {
+    const a = camera.worldToScreen(lane.x1, lane.y1);
+    const b = camera.worldToScreen(lane.x2, lane.y2);
+    ctx.lineWidth = lane.width * s;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  // A slightly darker centerline dash for a "road" read.
+  ctx.strokeStyle = '#565656';
+  ctx.setLineDash([24 * s, 20 * s]);
+  for (const lane of LANE_SEGMENTS) {
+    const a = camera.worldToScreen(lane.x1, lane.y1);
+    const b = camera.worldToScreen(lane.x2, lane.y2);
+    ctx.lineWidth = Math.max(1, 4 * s);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+}
+
 export function drawWorldBackground(ctx: CanvasRenderingContext2D, camera: Camera): void {
   const topLeft = camera.screenToWorld(0, 0);
   const bottomRight = camera.screenToWorld(camera.screenWidth, camera.screenHeight);
   ctx.fillStyle = '#1b3a1f';
   ctx.fillRect(0, 0, camera.screenWidth, camera.screenHeight);
+  drawLanes(ctx, camera);
   // Subtle ground grid for spatial reference.
   ctx.strokeStyle = 'rgba(255,255,255,0.04)';
   ctx.lineWidth = 1;

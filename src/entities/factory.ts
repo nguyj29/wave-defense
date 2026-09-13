@@ -1,4 +1,4 @@
-import { ALLY, ENEMIES, PLAYER, type EnemyDef } from '../config.ts';
+import { ALLY, CORE, ENEMIES, PLAYER, type EnemyDef } from '../config.ts';
 import type { Entity, Faction } from './types.ts';
 import { allocEntityId } from './types.ts';
 
@@ -128,7 +128,7 @@ export function createProjectile(
 export function createCore(x: number, y: number, radius: number, maxHp: number): Entity {
   const e = base('core', 'player', x, y);
   e.radius = radius;
-  e.color = '#5ec96a';
+  e.color = CORE.color;
   e.shape = 'hexagon';
   e.health = { hp: maxHp, maxHp };
   // No regen component — the core does not heal.

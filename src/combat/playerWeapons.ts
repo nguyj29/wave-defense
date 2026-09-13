@@ -4,6 +4,7 @@ import { createProjectile } from '../entities/factory.ts';
 import type { Entity } from '../entities/types.ts';
 import type { ShopLevels } from '../economy/shop.ts';
 import { pistolDamage, pistolFireRate, rifleDamage, rifleMagazine } from '../economy/shop.ts';
+import { playSfx } from '../audio/sfx.ts';
 
 export type WeaponId = 'rifle' | 'pistol';
 
@@ -52,6 +53,7 @@ export function startReload(state: PlayerWeaponState, levels: ShopLevels): void 
   if (state.rifleAmmo >= rifleMagazine(levels)) return;
   state.reloading = true;
   state.reloadTimer = WEAPONS.rifle.reloadTime ?? 1.5;
+  playSfx('reload');
 }
 
 export interface FireResult {
@@ -107,6 +109,7 @@ export function updatePlayerWeapon(
     { piercesTrees: true, blockedByRocks: true, color: '#ffe066', radius: 4 },
   );
   ctx.spawnProjectile(proj);
+  playSfx(state.current === 'rifle' ? 'rifleShot' : 'pistolShot');
 
   state.fireCooldown = 1 / fireRate;
   state.muzzleFlashTimer = 0.06;
