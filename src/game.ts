@@ -1,5 +1,5 @@
 import { Camera } from './camera.ts';
-import { ALLY, COINS, CORE, DEBUG, PLAYER, SHOP, SPAWN_DIRECTOR, SUMMON, WORLD } from './config.ts';
+import { ALLY, COINS, CORE, DEBUG, GEM, PLAYER, SHOP, SPAWN_DIRECTOR, SUMMON, WORLD } from './config.ts';
 import { setGodMode, updateRegen } from './combat/damage.ts';
 import {
   createPlayerWeaponState,
@@ -19,9 +19,9 @@ import { updateSpawners, type AllySpawner } from './entities/spawnerSystem.ts';
 import type { Entity } from './entities/types.ts';
 import { resetEntityIdCounter } from './entities/types.ts';
 import {
-  coinYieldMultiplier,
   coreMaxHp,
   createInitialShopLevels,
+  effectiveGemChance,
   rifleMagazine,
   spawnerAllyDamage,
   spawnerAllyHp,
@@ -238,6 +238,7 @@ export class Game {
   }
 
   private handleShopInput(): void {
+    this.shopPanel.tickPressFlash(FIXED_DT);
     if (this.input.wasPressed('KeyE') || this.input.wasPressed('Escape')) {
       this.phase = 'playing';
       return;
@@ -358,18 +359,27 @@ export class Game {
       spawnerAllyDamage(this.shopLevels),
     );
 
-    // Enemy deaths -> coins + kill tracking (each entity processed exactly once).
+    // Enemy deaths -> coins/gems + kill tracking (each entity processed exactly once).
     for (const e of this.entities) {
       if (e.kind === 'enemy' && e.dead && e.coinsMin !== undefined && !this.deathHandled.has(e.id)) {
         this.deathHandled.add(e.id);
         this.spawnDirector.registerKill();
-        const base = e.coinsMin + Math.random() * ((e.coinsMax ?? e.coinsMin) - e.coinsMin);
-        const value = Math.round(base * coinYieldMultiplier(this.shopLevels) * (1 + this.currentWaveCoinBonus));
-        this.entities.push(createCoin(e.x, e.y, value));
+        const gemChance = effectiveGemChance(this.shopLevels, !!e.isBoss);
+        if (Math.random() < gemChance) {
+          // Gems are a flat, rare-drop bonus — deliberately NOT scaled by
+          // coinYield-style multipliers or the early-call bonus (see
+          // DECISIONS.md): they're a separate mechanic from the base
+          // per-kill coin curve, not part of it.
+          this.entities.push(createCoin(e.x, e.y, GEM.coinValue, true));
+        } else {
+          const base = e.coinsMin + Math.random() * ((e.coinsMax ?? e.coinsMin) - e.coinsMin);
+          const value = Math.round(base * (1 + this.currentWaveCoinBonus));
+          this.entities.push(createCoin(e.x, e.y, value));
+        }
       }
     }
 
-    // Coin magnet + pickup.
+    // Coin/gem magnet + pickup (same path for both — only the SFX differs).
     for (const c of this.entities) {
       if (c.kind !== 'coin' || c.dead) continue;
       const dx = this.player.x - c.x;
@@ -378,7 +388,7 @@ export class Game {
       if (d <= COINS.pickupRadius) {
         this.coins += c.coinValue ?? 0;
         c.dead = true;
-        playSfx('coinPickup', 0.6);
+        playSfx(c.isGem ? 'gemPickup' : 'coinPickup', 0.6);
       } else if (d <= COINS.magnetRadius) {
         const inv = 1 / (d || 1);
         c.x += dx * inv * COINS.magnetSpeed * dt;
@@ -546,10 +556,27 @@ export class Game {
     for (const e of this.entities) {
       if (e.kind === 'coin' && !e.dead) {
         const p = this.camera.worldToScreen(e.x, e.y);
-        ctx.fillStyle = '#ffd700';
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 5 * this.camera.pixelScale, 0, Math.PI * 2);
-        ctx.fill();
+        if (e.isGem) {
+          // Small diamond/rhombus so gems read as visually distinct from
+          // the round gold coins at a glance (cyan vs gold).
+          const r = 6 * this.camera.pixelScale;
+          ctx.fillStyle = '#5fe0ff';
+          ctx.strokeStyle = '#d0faff';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y - r);
+          ctx.lineTo(p.x + r * 0.7, p.y);
+          ctx.lineTo(p.x, p.y + r);
+          ctx.lineTo(p.x - r * 0.7, p.y);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = '#ffd700';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 5 * this.camera.pixelScale, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     }
     for (const e of this.entities) {
@@ -645,6 +672,7 @@ export class Game {
     }
 
     if (this.phase === 'shop') {
+      this.shopPanel.updateHover(this.input.mouseX, this.input.mouseY, w, h);
       this.shopPanel.draw(ctx, w, h, this.coins, this.shopLevels);
     }
 

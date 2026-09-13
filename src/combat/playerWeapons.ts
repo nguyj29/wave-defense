@@ -5,6 +5,7 @@ import type { Entity } from '../entities/types.ts';
 import type { ShopLevels } from '../economy/shop.ts';
 import { pistolDamage, pistolFireRate, rifleDamage, rifleMagazine } from '../economy/shop.ts';
 import { playSfx } from '../audio/sfx.ts';
+import { pulseHaptic } from '../audio/haptics.ts';
 
 export type WeaponId = 'rifle' | 'pistol';
 
@@ -110,6 +111,7 @@ export function updatePlayerWeapon(
   );
   ctx.spawnProjectile(proj);
   playSfx(state.current === 'rifle' ? 'rifleShot' : 'pistolShot');
+  if (state.current === 'rifle') pulseHaptic('shoot'); // "very light pulse" — rifle only, per the brief
 
   state.fireCooldown = 1 / fireRate;
   state.muzzleFlashTimer = 0.06;

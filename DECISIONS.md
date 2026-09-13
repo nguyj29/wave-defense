@@ -609,6 +609,304 @@ Six changes requested in one pass. Numbers below are in `src/config.ts` unless n
   "feel" of openness the brief asked for, which is inherently a subjective
   call.
 
+## Wave-counter bug investigation, 60s test waves + auto-scaling prices, gem drops, Gem Chance item, UI feedback, haptics (post-MVP pass 4)
+
+Six items requested in one pass. Numbers below are in `src/config.ts` unless noted.
+
+### 1. Wave-counter "doesn't increment" — no bug found, it's wave length
+
+Read `waves/waveManager.ts` (phase/timer state machine), `waves/spawnDirector.ts`
+end-to-end (the clump-then-pause rewrite from the previous pass), `game.ts`'s
+force-end-wave-early logic (`isBudgetExhausted && aliveEnemies === 0`), and
+`ui/hud.ts` (wave number display) looking specifically for the failure modes
+named in the brief: a clump-in-progress that never fully discharges, an
+off-by-one that stalls before the last few units spawn, and spawn points
+filtered by `unlockWave` accidentally excluding an active point.
+
+- `isBudgetExhausted` is `spawnedGrunts >= wave.grunts && spawnedArchers >=
+  wave.archers && (wave.boss === 0 || bossSpawned)`. Traced the discharge
+  loop in `SpawnDirector.update()`: `pickNextKind()` returns `'grunt'`/
+  `'archer'` directly once the other budget is exhausted (no more
+  proportional coin-flip once one side hits 0) and returns `null` only once
+  *both* are exhausted, which `break`s the while loop — there is no path
+  where the last few units of a budget are skipped or where the loop exits
+  early while `spawnAccumulator >= 1` and units remain. The `aliveCap`
+  guard (`aliveCount + requests.length < aliveCap`) only pauses discharge
+  (banked in `spawnAccumulator`) — it never drops a spawn or corrupts the
+  counters. `advanceToNextClump()` only rotates the spawn point/resets
+  clump bookkeeping; it never touches `spawnedGrunts`/`spawnedArchers`/
+  `bossSpawned`, so a clump boundary can't stall the budget count.
+- `activeSpawnPoints(1)` (used by every wave in this 5-wave prototype) returns
+  all three `unlockWave: 1` points (`top-left`/`top-middle`/`top-right`) —
+  confirmed by reading `world/map.ts`; nothing filters out an active point.
+- `hud.ts`'s `waveNumber` field is populated fresh every frame in `game.ts`'s
+  `render()` from `this.waveManager.waveIndex + 1` (see the `HudData`
+  construction) — not a value captured once at start. There is no snapshot/
+  staleness bug.
+- **Verified live**: a scripted run pressed the F4 debug key 6 times (2 F4
+  presses per full wave = running→intermission→next-wave) and read
+  `window.game.waveManager.waveIndex` directly — it went `0 → 3` after 6
+  presses and stayed at `3` after a 7th (the 7th only flips `running` to
+  `intermission` again, correctly not incrementing further since two presses
+  are needed per wave, matching the documented F4 behavior from the
+  previous pass). This confirms the state machine transitions and the live
+  HUD read are both correct.
+- **Conclusion: no regression found.** At the pre-existing `durationSec: 180`
+  + `intermissionSec: 60`, a full wave cycle is 4 minutes; if a wave's
+  adaptive spawn rate is slow to exhaust budget or the player isn't
+  aggressively clearing enemies, "doesn't seem to increment" after a couple
+  of minutes of play is exactly what a correctly-functioning 4-minute cycle
+  looks like. Item 2 below (60s test waves) directly addresses this for
+  faster dev iteration without needing any state-machine fix, because
+  there wasn't a bug to fix.
+
+### 2. Wave duration → 60s (temporary testing value) + auto-scaling shop prices
+
+`WAVES[*].durationSec` is `60` for all 5 waves (was `180`), commented in
+`config.ts` as an explicit temporary testing value with the designed value
+(180) and the revert instructions inline. `intermissionSec` is untouched
+(60, as instructed).
+
+Since the shop's price curve was calibrated assuming ~180s/wave of coin
+income, `economy/shop.ts::waveDurationScaleFactor()` computes
+`average(WAVES[*].durationSec) / WAVE_DESIGN_BASELINE_DURATION_SEC` (a new
+`config.ts` constant, `180`) and `priceForLevel()` multiplies every price by
+that factor before rounding. Chose a **straight linear ratio of average
+actual duration to baseline** (not, say, a sqrt-dampened curve) because the
+scaling is explicitly a testing convenience, not a tuned mechanic — the goal
+is "prices track available playtime roughly 1:1", and a more clever curve
+would just be extra unverified guesswork for a value nobody is meant to see
+in the shipped game. Averaging (rather than reading `WAVES[0].durationSec`
+directly) is the more robust choice if wave durations ever diverge, though
+they don't currently. At 60s test waves this computes `60/180 = 0.333`; at
+the designed 180s it's `1.0` (i.e. reverting `durationSec` to 180 for every
+wave restores the original prices with zero other code changes, as
+required). Verified numerically and visually via a live shop-panel
+screenshot at the 60s scaling: `coreHp` level-1 price `round(25 * 1^0.75 *
+0.333) = 8` (was 19 at factor 1.0), `spawnerCapacity` level-1 `round(22 *
+0.333) = 7` (was 17), `gemChance` level-2 price `round(20 * 2^1.0 * 0.333) =
+13` (was 40) — all match what the running game actually charged in the
+shop UI screenshot. `economy/devReadout.ts`'s price-curve table calls the
+same `priceForLevel()`, so its F9 console readout automatically reflects
+scaled prices too; it now also prints the live `waveDurationScaleFactor()`
+value in its header line so it's obvious from the readout alone whether
+you're looking at scaled-for-testing or calibrated numbers.
+
+### 3. Gem drops
+
+New `GEM` config block: `dropChanceBase: 0.05` (5%), `dropChanceBoss: 0.20`
+(20%, checked via `ENEMIES[x].isBoss`/`Entity.isBoss`), `coinValue: 10`,
+`chancePerLevel: 0.05` (see item 4). In `game.ts`'s enemy-death loop, each
+death rolls `Math.random() < effectiveGemChance(shopLevels, isBoss)` *before*
+rolling a normal coin value — on a hit, it spawns a gem-flagged coin instead
+of a normal one, so a kill drops exactly one pickup either way (gems don't
+stack on top of the base coin).
+
+**Entity/rendering**: extended the existing `kind: 'coin'` entity rather than
+adding a new `EntityKind`, since coins already carry all the state (position,
+`coinValue`) and go through one magnet/pickup code path in `game.ts` that a
+new kind would have had to duplicate. Added `Entity.isGem?: boolean` (types.ts)
+and a `createCoin(x, y, value, isGem = false)` overload (factory.ts) that
+picks a cyan color (`#5fe0ff`) and slightly larger radius for gems vs the
+gold coin. `game.ts`'s coin-render loop draws gems as a small diamond
+(4-point rhombus path) instead of a circle — visually distinct at a glance
+from the round gold coins, cyan reading clearly against the green/gray map.
+The magnet/pickup loop is completely unchanged in structure (same
+`pickupRadius`/`magnetRadius`/`magnetSpeed` math keyed off `c.kind ===
+'coin'`) — it just also credits `c.coinValue` for gems (already `10` from
+creation) and plays `gemPickup` (a brighter two-note sparkle chime,
+`audio/sfx.ts`) instead of `coinPickup` when `c.isGem`.
+
+**Scaling decision (documented per the brief)**: gem value is a **flat
+`GEM.coinValue = 10`, NOT scaled by the coin-yield-style multiplier or the
+current-wave early-call coin bonus** — reasoned as: gems are a separate rare-
+drop mechanic layered on top of the base per-kill coin curve, not part of it,
+so they shouldn't inherit modifiers designed to tune that curve (an
+early-call bonus scaling gem value too would make gem economics accidentally
+entangled with intermission-skip timing, which has nothing to do with why
+gems exist). The regular coin drop's value calculation is otherwise
+unchanged (still `coinsMin..coinsMax` scaled by `(1 + currentWaveCoinBonus)`)
+— removing the old `coinYieldMultiplier` factor there is purely because that
+multiplier no longer exists (see item 4), not a scaling-philosophy change to
+normal coins.
+
+**Verified live** (forced via a scripted `Math.random` override, since 5%
+is impractical to trigger by chance in a short run): spawned a grunt far
+from the player, force-killed it with the RNG pinned to always take the gem
+branch, and confirmed the resulting entity was `{ kind: 'coin', isGem: true,
+coinValue: 10 }` in the live game state before pickup. Did not additionally
+verify the diamond *rendering* pixel-for-pixel (code-reviewed the draw path
+instead) since the forced gem in the live run spawned far from the player
+and off the visible viewport at the time of the check.
+
+### 4. Coin Yield → Gem Chance (Base tab)
+
+Removed `coinYield` entirely: gone from `SHOP_ITEMS`, `ShopItemId`,
+`ShopLevels`, and `createInitialShopLevels()` in `economy/shop.ts`, and its
+`coinYieldMultiplier()` derived-stat function and the `COIN_YIELD_PER_LEVEL`
+config constant are deleted (not left dead) since the coin-drop calc no
+longer references a coin-yield multiplier at all. In its place: `gemChance`
+(Base tab, `base: 20, exponent: 1.0` — same steeper curve as the old
+coin-yield item, on purpose: this is still meant to be a "big commitment,
+pays off over several waves" lever, not a cheap incremental stat, per the
+brief's explicit ask to preserve that design intent). `effectiveGemChance
+(levels, isBoss)` is the new derived-stat function (`economy/shop.ts`):
+`base rate + levels.gemChance * GEM.chancePerLevel`, clamped to `[0, 1]`.
+`chancePerLevel: 0.05` (+5 percentage points per level) was chosen so a
+few levels meaningfully move the needle (base 5% → 30% at level 5) without
+either level 1 feeling pointless or a maxed item trivializing the coin
+economy (a gem is worth 10 coins vs. a grunt's average ~1.5 coins, so even a
+30%-gem-chance grunt kill nets on average `0.3*10 + 0.7*1.5 ≈ 4.05` expected
+coins — meaningfully better than baseline `1.5` but nowhere near "coins
+don't matter anymore").
+
+`economy/describe.ts`'s `gemChance` case shows `"{current}% gem" ->
+"{next}% gem"` (the *effective* current-vs-boss-false rate, matching what a
+non-boss kill will actually do); `ui/shopPanel.ts` needed no changes beyond
+what it already does generically (label + `describeItem()` + `nextPrice()`)
+since the row rendering was already fully data-driven off `SHOP_ITEMS`.
+`economy/devReadout.ts`'s price-curve table picks up the rename
+automatically (iterates `SHOP_ITEMS`); its payoff-verification section was
+rewritten from `computeCoinYieldPayoff()` to `computeGemChancePayoff()`,
+simulating expected bonus coins per wave as `kills * chancePerLevel *
+coinValue` against the same `[25, 36, 52, 69, 109]` kills-per-wave proxy the
+old coin-yield section used (repurposed as a kills estimate rather than a
+coins-earned estimate, since it's the same "player killing at increasing
+capability across 5 waves" shape either way — not re-derived from scratch,
+since the exact kill counts were never independently measured and this is a
+sanity-check tool, not a hard spec).
+
+**Sanity-checked cost vs. expected value** (at the 60s-scaled test prices,
+which is what a dev would actually see running `npm run dev` right now —
+noted in the payoff table's header): level 1 costs `7` coins (scaled) and
+its marginal +5% gem chance is worth `25 kills-proxy * 0.05 * 10 = 12.5`
+expected bonus coins in wave 1 alone — pays for itself within the very first
+wave at these compressed test numbers, which is expected and fine since
+prices were deliberately compressed 3x for testing (at the *design* baseline
+180s/factor-1.0 prices, level 1 costs `20`, breaking even about 65% through
+wave 1 — still a fast payback, appropriately so since it's the cheapest
+level of the run's biggest econ lever). Level 2 (design-baseline cost `40`)
+breaks even by mid-wave-2 under the same kills-proxy — this item is
+intentionally a bit more aggressively front-loaded in payoff than the old
+coin-yield item was (whose level-1 payoff was "partway through wave 3"),
+which is a deliberate choice given the 5-wave MVP is even shorter than the
+original spec anticipated needing a 3-wave payoff window for: a
+same-magnitude "waits 3 of 5 waves to pay off" lever would barely matter by
+the time it pays off. Not claiming these numbers are perfectly balanced —
+this is the "use your judgment, sanity-check a couple of levels" bar the
+brief asked for, not a fully playtested economy.
+
+### 5. UI hover/click feedback
+
+`ui/shopPanel.ts` gained a `hitTest()` helper shared by both click-handling
+and a new `updateHover(mx, my, screenW, screenH)` method (called every
+render frame while the shop is open, from `game.ts`'s `render()`, using the
+same live `Input.mouseX/mouseY` the click handler already reads) so hover
+and click use one source of truth for "what's under the cursor" instead of
+two separately-maintained hit-test implementations. Hovering a tab or a
+buyable row now draws a light-blue highlight background + border (rows) or
+a lighter fill + border (tabs); a first-frame-of-hover transition plays a
+quiet `uiHover` blip (`audio/sfx.ts`, new sound, very low gain `0.08` so it
+doesn't get annoying while sweeping the mouse across rows) — deliberately
+*not* replayed every frame while stationary over the same target, only on
+the hover target changing.
+
+Clicking a row now plays `uiClick` (a short, crisp triangle-wave blip,
+distinct in timbre/envelope from every gameplay SFX) and, on a successful
+purchase, sets a ~120ms press-flash: the row briefly scales down ~3% and
+flashes brighter/white-bordered before easing back (`ShopPanel.tickPressFlash
+(dt)`, called once per fixed tick while the shop is open from `game.ts`'s
+`handleShopInput()`) — purchases now have an immediate, responsive visual
+beat instead of only the coins-counter changing. An unaffordable click still
+plays a quieter `uiClick` so the click itself registers as felt, without
+implying a purchase happened. Switching tabs plays `uiClick` only when the
+tab actually changes (clicking the already-active tab is silent, matching
+"activation," not "click anywhere"). Scoped exactly to interactive elements
+(shop rows + tabs) per the brief — the HUD's HP/core bars, ammo counter,
+minimap, etc. are untouched and have no hover state, since they're not
+clickable.
+
+**Verified live**: scripted hover over the "Gem Chance" row and screenshotted
+the shop panel — the row shows a visible light-blue background+border while
+the mouse sits over it, with no console errors from the hover/click code
+path across several shop-panel interactions (tab switches, an actual
+successful purchase triggered by a real click, hovering).
+
+### 6. Best-effort haptic feedback
+
+New `src/audio/haptics.ts`, mirroring `audio/sfx.ts`'s data-driven-table
+pattern: one `HAPTIC_DEFS: Record<HapticKind, HapticPulse>` config object
+(`damage`, `coreDamage`, `shoot`, `kill`), one public entry point
+`pulseHaptic(kind)`. Two feature-detected backends, both best-effort and
+wrapped in try/catch so an unsupported/blocked API is a silent no-op, never
+a thrown error:
+- **Gamepad rumble**: polls `navigator.getGamepads()` at call time (no
+  persistent polling loop needed — the Gamepad API keeps pad state current
+  without an explicit connect callback in most engines/browsers) for a
+  connected pad exposing `vibrationActuator`, then calls
+  `playEffect('dual-rumble', {...})` with `durationMs` in `[50, 140]` and
+  magnitudes in `[0.2, 0.6]` — short and moderate per the brief, not a
+  full-intensity rumble pack.
+- **`navigator.vibrate`** (mobile): called with a short duration
+  (`min(50, durationMs)`, so 30-50ms per event) when the API exists.
+
+Wired at the same faction-agnostic call sites the SFX already use, so no new
+call sites were needed in gameplay code: `combat/damage.ts::playDamageSfx`
+(already dispatches purely off `target.kind`/`isBoss`) now also calls
+`pulseHaptic('damage')` on player hits, `pulseHaptic('coreDamage')` on core
+hits, and `pulseHaptic('kill')` on enemy death; `combat/playerWeapons.ts`
+calls `pulseHaptic('shoot')` on every rifle shot only (not the pistol — the
+brief specifically called out "firing the rifle (a very light pulse)").
+
+**Explicitly documented as best-effort/likely-imperceptible on standard
+desktop hardware**, per the brief: this session has no gamepad attached and
+a desktop browser's `navigator.vibrate` is universally unimplemented, so
+none of this is expected to produce any felt effect during the user's normal
+mouse+keyboard play — it's cheap, additive, feature-detected wiring for
+whenever a gamepad or mobile browser is actually in the loop, not a verified
+"feels good" feature. Not smoke-tested against real hardware (none
+available); code-reviewed only, and the try/catch wrapping means even a
+completely wrong `playEffect` parameter shape on some exotic
+`vibrationActuator` implementation would degrade to a silent no-op rather
+than an exception breaking gameplay.
+
+### Verification for this pass
+
+- `npm run build` (tsc + vite build) passes clean.
+- Playwright smoke run against `npm run dev`: no `pageerror`/`console.error`
+  across every interaction exercised (wave force-advance via F4, forced
+  enemy death via direct state mutation both with and without a forced gem
+  roll, shop-panel open/hover/tab-switch/purchase).
+- **Wave counter**: confirmed live via `window.game.waveManager.waveIndex`
+  reading `0 → 3` after 6x F4 (2 presses/wave) and holding at `3` after a
+  7th press (correctly only flips phase once) — see item 1.
+- **Gem drops**: confirmed live via a forced-RNG kill producing a real
+  `{ kind: 'coin', isGem: true, coinValue: 10 }` entity in `game.entities`,
+  picked up through the same magnet/pickup path as an ordinary coin (not
+  independently re-tested since the code path is identical). Diamond
+  rendering and the `gemPickup` SFX trigger were verified by code review
+  only, not visually/audibly (the forced-gem test entity spawned off the
+  visible viewport, by design, so it wouldn't be immediately auto-picked-up
+  before the assertion ran).
+- **Gem Chance shop item + auto-scaled prices**: confirmed live via a shop-
+  panel screenshot at the 60s test-duration scaling showing "Gem Chance (Lv
+  0), 5% gem -> 10% gem, 7c" and the other Base-tab items' scaled prices,
+  matching the hand-computed `waveDurationScaleFactor() = 0.333` values.
+- **UI hover/click feedback**: confirmed live via a shop-panel screenshot
+  showing the light-blue hover highlight on a row under the (scripted)
+  mouse position, and a real click-driven purchase completing without
+  errors (which also exercises the `uiClick` SFX + press-flash timer code
+  paths, though the sound itself and the flash's on-screen motion need a
+  human to judge "feel").
+- **Not verified by direct observation** (needs a human, or hardware this
+  session doesn't have): whether the new SFX (`gemPickup`, `uiHover`,
+  `uiClick`) actually sound distinct/good in context; the haptics module
+  against a real gamepad or mobile device (none available in this
+  environment); the press-flash animation's on-screen motion/timing feel;
+  and whether `GEM.chancePerLevel`/`gemChance`'s base price feel right in a
+  real multi-wave playthrough rather than just the arithmetic sanity check
+  above.
+
 ## Acceptance-criteria verification note
 
 See the final chat report for which of the spec's 16 acceptance criteria

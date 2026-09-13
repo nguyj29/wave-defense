@@ -1,5 +1,5 @@
-import { SHOP_ITEMS, WAVES } from '../config.ts';
-import { priceForLevel } from './shop.ts';
+import { GEM, SHOP_ITEMS, WAVES } from '../config.ts';
+import { priceForLevel, waveDurationScaleFactor } from './shop.ts';
 
 // Dev-mode readout: for each shop item, cumulative coins spent vs total
 // "power" gained across levels 1-30, and the fitted exponent x in P ∝ C^x
@@ -49,22 +49,25 @@ export function computePriceCurveReadout(maxLevel = 30): ItemCurveRow[] {
   return rows;
 }
 
-// Coin-yield payoff verification: simulates the ~70%-budget expected drop
-// schedule from the spec (25/36/52/69/109) and tracks when the cumulative
-// bonus from a purchased level pays back its cost.
-const EXPECTED_BASE_DROPS = [25, 36, 52, 69, 109];
-const COIN_YIELD_PER_LEVEL = 0.25;
+// Gem-chance payoff verification: simulates the ~70%-budget expected drop
+// schedule from the original spec (25/36/52/69/109 non-gem-drop-eligible
+// kills' worth of coin income, reused here as a rough kills-per-wave proxy)
+// and tracks when the cumulative expected gem income from a purchased level
+// pays back its cost. Gems are a flat GEM.coinValue each, at
+// GEM.chancePerLevel additional probability per level, so expected bonus
+// coins per wave = kills * chancePerLevel * coinValue.
+const EXPECTED_KILLS_PER_WAVE = [25, 36, 52, 69, 109];
 
 export interface PayoffRow {
   level: number;
   cost: number;
   boughtAfterWave: number;
-  cumulativeBonusByWave: number[]; // bonus accumulated by end of each wave
+  cumulativeBonusByWave: number[]; // expected bonus coins accumulated by end of each wave
   payoffWaveEstimate: string;
 }
 
-export function computeCoinYieldPayoff(): PayoffRow[] {
-  const item = SHOP_ITEMS.find((i) => i.id === 'coinYield')!;
+export function computeGemChancePayoff(): PayoffRow[] {
+  const item = SHOP_ITEMS.find((i) => i.id === 'gemChance')!;
   const rows: PayoffRow[] = [];
   for (const level of [1, 2]) {
     const cost = priceForLevel(item, level);
@@ -75,7 +78,7 @@ export function computeCoinYieldPayoff(): PayoffRow[] {
     let payoffFraction = 0;
     for (let w = 0; w < WAVES.length; w++) {
       const waveNum = w + 1;
-      const bonusThisWave = waveNum > boughtAfterWave ? EXPECTED_BASE_DROPS[w] * COIN_YIELD_PER_LEVEL : 0;
+      const bonusThisWave = waveNum > boughtAfterWave ? EXPECTED_KILLS_PER_WAVE[w] * GEM.chancePerLevel * GEM.coinValue : 0;
       const before = running;
       running += bonusThisWave;
       cumulative.push(running);
@@ -99,7 +102,7 @@ export function computeCoinYieldPayoff(): PayoffRow[] {
 }
 
 export function printDevReadout(): void {
-  console.log('=== Shop price-curve readout (levels 1-30) ===');
+  console.log(`=== Shop price-curve readout (levels 1-30) — waveDurationScaleFactor = ${waveDurationScaleFactor().toFixed(3)} ===`);
   console.table(
     computePriceCurveReadout().map((r) => ({
       item: r.id,
@@ -107,9 +110,9 @@ export function printDevReadout(): void {
       fittedExponentX: r.fittedExponent.toFixed(3),
     })),
   );
-  console.log('=== Coin-yield payoff verification ===');
+  console.log('=== Gem-chance payoff verification (prices reflect current waveDurationScaleFactor) ===');
   console.table(
-    computeCoinYieldPayoff().map((r) => ({
+    computeGemChancePayoff().map((r) => ({
       level: r.level,
       cost: r.cost,
       boughtAfterWave: r.boughtAfterWave,

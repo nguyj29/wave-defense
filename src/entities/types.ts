@@ -96,6 +96,7 @@ export interface Entity {
   summonedByPlayer?: boolean;
   spawnerId?: number;
   coinValue?: number;
+  isGem?: boolean; // kind: 'coin' entities only — distinct visual + pickup SFX, same magnet/pickup path
   iframeTimer?: number; // player-only: remaining invulnerability
   damageFlashTimer?: number; // render: brief hit flash
   hitFlashTimer?: number;

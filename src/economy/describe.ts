@@ -37,7 +37,10 @@ export function describeItem(id: ShopItemId, levels: ShopLevels): { current: str
         current: `+${shop.allyStrengthBonusHp(levels).toFixed(0)}hp/+${shop.allyStrengthBonusDamage(levels).toFixed(0)}dmg`,
         next: `+${shop.allyStrengthBonusHp(nxt).toFixed(0)}hp/+${shop.allyStrengthBonusDamage(nxt).toFixed(0)}dmg`,
       };
-    case 'coinYield':
-      return { current: `+${Math.round((shop.coinYieldMultiplier(levels) - 1) * 100)}%`, next: `+${Math.round((shop.coinYieldMultiplier(nxt) - 1) * 100)}%` };
+    case 'gemChance':
+      return {
+        current: `${Math.round(shop.effectiveGemChance(levels, false) * 100)}% gem`,
+        next: `${Math.round(shop.effectiveGemChance(nxt, false) * 100)}% gem`,
+      };
   }
 }

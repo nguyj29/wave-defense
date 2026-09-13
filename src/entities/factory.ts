@@ -135,11 +135,14 @@ export function createCore(x: number, y: number, radius: number, maxHp: number):
   return e;
 }
 
-export function createCoin(x: number, y: number, value: number): Entity {
+export function createCoin(x: number, y: number, value: number, isGem = false): Entity {
   const e = base('coin', 'player', x, y);
-  e.radius = 6;
-  e.color = '#ffd700';
+  e.radius = isGem ? 7 : 6;
+  e.color = isGem ? '#5fe0ff' : '#ffd700'; // cyan gem vs gold coin — distinct against the ground
+  // Gems keep kind: 'coin' (same magnet/pickup code path in game.ts) but
+  // render as a diamond via the isGem flag + drawGem() renderer helper.
   e.shape = 'circle';
   e.coinValue = value;
+  e.isGem = isGem;
   return e;
 }

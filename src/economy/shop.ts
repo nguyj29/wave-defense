@@ -1,4 +1,4 @@
-import { ALLY, BASE, COIN_YIELD_PER_LEVEL, CORE, SHOP_ITEMS, SUMMON, WEAPONS, type ShopItemDef } from '../config.ts';
+import { ALLY, BASE, CORE, GEM, SHOP_ITEMS, SUMMON, WAVES, WAVE_DESIGN_BASELINE_DURATION_SEC, WEAPONS, type ShopItemDef } from '../config.ts';
 
 export type ShopItemId =
   | 'rifleDamage'
@@ -13,7 +13,7 @@ export type ShopItemId =
   | 'spawnerOutput'
   | 'spawnerCapacity'
   | 'allyStrength'
-  | 'coinYield';
+  | 'gemChance';
 
 export type ShopLevels = Record<ShopItemId, number>;
 
@@ -31,7 +31,7 @@ export function createInitialShopLevels(): ShopLevels {
     spawnerOutput: 0,
     spawnerCapacity: 0,
     allyStrength: 0,
-    coinYield: 0,
+    gemChance: 0,
   };
 }
 
@@ -41,9 +41,26 @@ export function getItemDef(id: ShopItemId): ShopItemDef {
   return def;
 }
 
-/** price(L) = round(base * L^exponent) — the cost of buying level L (the (L)th purchase). */
+/**
+ * Testing convenience (NOT part of the final calibrated economy — see
+ * DECISIONS.md): the shop price curve was calibrated assuming
+ * `WAVE_DESIGN_BASELINE_DURATION_SEC` (180s) waves' worth of coin income per
+ * wave. If `WAVES.durationSec` is shortened for faster dev iteration, the
+ * player earns proportionally less per wave than the curve assumes, so
+ * prices scale down by the same ratio (straight linear ratio of *average*
+ * actual duration to the baseline — waves don't currently differ in
+ * duration, but averaging is robust if they ever do). Reverting
+ * `durationSec` back to 180 for every wave restores factor 1.0 (unscaled,
+ * original calibrated prices) automatically.
+ */
+export function waveDurationScaleFactor(): number {
+  const avg = WAVES.reduce((sum, w) => sum + w.durationSec, 0) / WAVES.length;
+  return avg / WAVE_DESIGN_BASELINE_DURATION_SEC;
+}
+
+/** price(L) = round(base * L^exponent * waveDurationScaleFactor()) — the cost of buying level L (the (L)th purchase). */
 export function priceForLevel(def: ShopItemDef, level: number): number {
-  return Math.round(def.base * Math.pow(level, def.exponent));
+  return Math.round(def.base * Math.pow(level, def.exponent) * waveDurationScaleFactor());
 }
 
 /** Cost to go from the current level to the next. */
@@ -105,7 +122,12 @@ export function spawnerAllyHp(levels: ShopLevels): number {
 export function spawnerAllyDamage(levels: ShopLevels): number {
   return ALLY.meleeDamage + allyStrengthBonusDamage(levels);
 }
-/** Additive fraction of the BASE coin drop — never compounds level over level. */
-export function coinYieldMultiplier(levels: ShopLevels): number {
-  return 1 + levels.coinYield * COIN_YIELD_PER_LEVEL;
+/**
+ * Effective gem-drop chance for an enemy, given shop levels: the base rate
+ * (5% normal / 20% boss, from GEM.dropChanceBase/dropChanceBoss) plus a flat
+ * additive per-level bonus (GEM.chancePerLevel), clamped to [0, 1].
+ */
+export function effectiveGemChance(levels: ShopLevels, isBoss: boolean): number {
+  const base = isBoss ? GEM.dropChanceBoss : GEM.dropChanceBase;
+  return Math.max(0, Math.min(1, base + levels.gemChance * GEM.chancePerLevel));
 }

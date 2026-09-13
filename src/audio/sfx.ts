@@ -47,8 +47,11 @@ export type SfxName =
   | 'playerHurt'
   | 'coreHurt'
   | 'coinPickup'
+  | 'gemPickup'
   | 'shopOpen'
-  | 'shopPurchase';
+  | 'shopPurchase'
+  | 'uiHover'
+  | 'uiClick';
 
 const SFX_DEFS: Record<SfxName, SfxLayer[]> = {
   // Rapid, sharp, higher-pitched, short — reads as automatic-rifle "crack".
@@ -98,11 +101,21 @@ const SFX_DEFS: Record<SfxName, SfxLayer[]> = {
     { kind: 'tone', wave: 'sine', freqStart: 90, freqEnd: 38, gain: 0.3, attack: 0.001, decay: 0.3, delay: 0.14 },
   ],
   coinPickup: [{ kind: 'tone', wave: 'sine', freqStart: 700, freqEnd: 1300, gain: 0.22, attack: 0.001, decay: 0.1 }],
+  // Brighter/shinier than coinPickup — a two-note sparkle chime so a gem
+  // pickup reads as a rarer, more valuable event than a plain coin blip.
+  gemPickup: [
+    { kind: 'tone', wave: 'sine', freqStart: 1200, freqEnd: 2200, gain: 0.24, attack: 0.001, decay: 0.12 },
+    { kind: 'tone', wave: 'sine', freqStart: 1800, freqEnd: 3000, gain: 0.18, attack: 0.001, decay: 0.14, delay: 0.06 },
+  ],
   shopOpen: [{ kind: 'tone', wave: 'triangle', freqStart: 400, freqEnd: 700, gain: 0.2, attack: 0.02, decay: 0.15 }],
   shopPurchase: [
     { kind: 'tone', wave: 'square', freqStart: 600, freqEnd: 900, gain: 0.2, attack: 0.001, decay: 0.08 },
     { kind: 'tone', wave: 'square', freqStart: 800, freqEnd: 1100, gain: 0.2, attack: 0.001, decay: 0.1, delay: 0.08 },
   ],
+  // Short, crisp, distinct from gameplay SFX — generic UI feedback for hover
+  // and click on interactive panel elements (shop rows/tabs).
+  uiHover: [{ kind: 'tone', wave: 'sine', freqStart: 500, freqEnd: 650, gain: 0.08, attack: 0.001, decay: 0.03 }],
+  uiClick: [{ kind: 'tone', wave: 'triangle', freqStart: 700, freqEnd: 500, gain: 0.16, attack: 0.001, decay: 0.05 }],
 };
 
 let ctx: AudioContext | null = null;

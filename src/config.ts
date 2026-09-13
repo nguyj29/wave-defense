@@ -301,13 +301,29 @@ export interface WaveDef {
   intermissionSec: number;
 }
 
+// `durationSec` is designed/calibrated at 180 (see
+// WAVE_DESIGN_BASELINE_DURATION_SEC below, and DECISIONS.md) — the shop
+// price curve assumes 3-minute waves' worth of coin income per wave.
+//
+// *** TEMPORARY TESTING VALUE ***: durationSec is currently shortened to 60
+// for faster dev iteration (so a full 5-wave run doesn't take 20 minutes).
+// Flip every `durationSec: 60` below back to `180` to restore the designed
+// pacing — shop prices auto-scale off WAVES via
+// `economy/shop.ts::waveDurationScaleFactor()`, so no other change is needed
+// when you do. See DECISIONS.md for the scaling rationale.
 export const WAVES: WaveDef[] = [
-  { wave: 1, grunts: 24, archers: 0, boss: 0, durationSec: 180, intermissionSec: 60 },
-  { wave: 2, grunts: 34, archers: 0, boss: 0, durationSec: 180, intermissionSec: 60 },
-  { wave: 3, grunts: 30, archers: 12, boss: 0, durationSec: 180, intermissionSec: 60 },
-  { wave: 4, grunts: 36, archers: 18, boss: 0, durationSec: 180, intermissionSec: 60 },
-  { wave: 5, grunts: 40, archers: 24, boss: 1, durationSec: 180, intermissionSec: 60 },
+  { wave: 1, grunts: 24, archers: 0, boss: 0, durationSec: 60, intermissionSec: 60 },
+  { wave: 2, grunts: 34, archers: 0, boss: 0, durationSec: 60, intermissionSec: 60 },
+  { wave: 3, grunts: 30, archers: 12, boss: 0, durationSec: 60, intermissionSec: 60 },
+  { wave: 4, grunts: 36, archers: 18, boss: 0, durationSec: 60, intermissionSec: 60 },
+  { wave: 5, grunts: 40, archers: 24, boss: 1, durationSec: 60, intermissionSec: 60 },
 ];
+
+// The wave duration the shop's price curve was originally calibrated
+// against (see DECISIONS.md's coin-yield/gem-chance payoff sections). Used
+// by `economy/shop.ts::waveDurationScaleFactor()` to auto-scale prices
+// whenever WAVES.durationSec is changed for testing (see the comment above).
+export const WAVE_DESIGN_BASELINE_DURATION_SEC = 180;
 
 export const SPAWN_DIRECTOR = {
   // Roughly 2.3x'd both base and max (see DECISIONS.md) — "much higher"
@@ -364,6 +380,19 @@ export const COINS = {
 };
 
 // ---------------------------------------------------------------------------
+// Gem drops: a rare, flat-value alternative to a coin drop (see DECISIONS.md
+// for why the flat coinValue is NOT scaled by coinYieldMultiplier/early-call
+// bonuses — gems are a separate "rare drop" mechanic, not part of the base
+// economy curve). Picked up identically to coins (same magnet/pickup radius).
+// ---------------------------------------------------------------------------
+export const GEM = {
+  dropChanceBase: 0.05, // 5% base chance any non-boss enemy drops a gem instead of a coin
+  dropChanceBoss: 0.2, // 20% for bosses
+  coinValue: 10, // flat coin-equivalent value on pickup
+  chancePerLevel: 0.05, // +5 percentage points per Gem Chance shop level, additive on top of the base rates
+};
+
+// ---------------------------------------------------------------------------
 // Shop pricing: price(L) = round(base * L^exponent). Reciprocal rule for all
 // cooldown/interval/duration stats: store as a rate, add linearly, invert.
 // ---------------------------------------------------------------------------
@@ -388,12 +417,13 @@ export const SHOP_ITEMS: ShopItemDef[] = [
   { id: 'spawnerOutput', tab: 'base', label: 'Spawner Output', base: 24, exponent: 0.75 },
   { id: 'spawnerCapacity', tab: 'base', label: 'Spawner Capacity', base: 22, exponent: 0.75 },
   { id: 'allyStrength', tab: 'base', label: 'Ally Strength', base: 20, exponent: 0.75 },
-  // Coin yield uses exponent 1.0 (not 0.75) and is purely additive per the
-  // spec's payoff calibration — see DECISIONS.md for the arithmetic.
-  { id: 'coinYield', tab: 'base', label: 'Coin Yield', base: 20, exponent: 1.0 },
+  // Gem Chance replaced the old Coin Yield item (see DECISIONS.md) — same
+  // "big commitment, pays off over several waves" design intent, so it kept
+  // the steeper exponent 1.0 (not the standard 0.75) rather than the
+  // standard curve, since a rising gem chance is a compounding-ish income
+  // multiplier much like coin yield was.
+  { id: 'gemChance', tab: 'base', label: 'Gem Chance', base: 20, exponent: 1.0 },
 ];
-
-export const COIN_YIELD_PER_LEVEL = 0.25; // +25% of BASE drop, additive (never compounding)
 
 // Base-tab TODO (not built in this MVP — see DECISIONS.md):
 //   - ally type unlocks

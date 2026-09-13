@@ -1,6 +1,7 @@
 import { PLAYER } from '../config.ts';
 import type { Entity } from '../entities/types.ts';
 import { playSfx } from '../audio/sfx.ts';
+import { pulseHaptic } from '../audio/haptics.ts';
 
 // Debug-only global toggle (F5). Kept as a tiny module-level flag rather than
 // threading a "debug" object through every combat call site.
@@ -32,20 +33,23 @@ export function applyDamage(target: Entity, amount: number): void {
   playDamageSfx(target);
 }
 
-/** Faction-agnostic damage-sound dispatch, driven by the target's kind/archetype. */
+/** Faction-agnostic damage-sound (+ best-effort haptics) dispatch, driven by the target's kind/archetype. */
 function playDamageSfx(target: Entity): void {
   if (target.kind === 'enemy') {
     if (target.dead) {
       if (target.isBoss) playSfx('enemyDeathBoss');
       else if (target.archetype === 'archer') playSfx('enemyDeathArcher');
       else playSfx('enemyDeathGrunt');
+      pulseHaptic('kill');
     } else {
       playSfx('enemyHit');
     }
   } else if (target.kind === 'player') {
     playSfx('playerHurt');
+    pulseHaptic('damage');
   } else if (target.kind === 'core') {
     playSfx('coreHurt');
+    pulseHaptic('coreDamage');
   }
 }
 
