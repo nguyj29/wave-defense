@@ -42,5 +42,20 @@ export function describeItem(id: ShopItemId, levels: ShopLevels): { current: str
         current: `${Math.round(shop.effectiveGemChance(levels, false) * 100)}% gem`,
         next: `${Math.round(shop.effectiveGemChance(nxt, false) * 100)}% gem`,
       };
+    // Phase 4 additions ----------------------------------------------------
+    case 'unlockArcherAlly':
+      return shop.isAllyTypeUnlocked(levels, 'archer') ? { current: 'Unlocked', next: 'Unlocked' } : { current: 'Locked', next: 'Unlocked' };
+    case 'unlockGuardianAlly':
+      return shop.isAllyTypeUnlocked(levels, 'guardian') ? { current: 'Unlocked', next: 'Unlocked' } : { current: 'Locked', next: 'Unlocked' };
+    case 'doorHp':
+      return { current: `${shop.doorMaxHp(levels).toFixed(0)} hp`, next: `${shop.doorMaxHp(nxt).toFixed(0)} hp` };
+    case 'maceDamage':
+      return { current: `${shop.maceDamage(levels).toFixed(0)} dmg`, next: `${shop.maceDamage(nxt).toFixed(0)} dmg` };
+    case 'maceSelfHeal':
+      return { current: `+${shop.maceSelfHealBonus(levels).toFixed(1)}hp/hit`, next: `+${shop.maceSelfHealBonus(nxt).toFixed(1)}hp/hit` };
+    case 'grenadeDamage':
+      return { current: `${shop.grenadeDamage(levels).toFixed(0)} dmg`, next: `${shop.grenadeDamage(nxt).toFixed(0)} dmg` };
+    case 'grenadeBlastRadius':
+      return { current: `${shop.grenadeBlastRadius(levels).toFixed(0)}u`, next: `${shop.grenadeBlastRadius(nxt).toFixed(0)}u` };
   }
 }

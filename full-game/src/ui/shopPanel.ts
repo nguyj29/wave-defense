@@ -1,6 +1,6 @@
 import { SHOP_ITEMS } from '../config.ts';
 import { describeItem } from '../economy/describe.ts';
-import { nextPrice, type ShopItemId, type ShopLevels } from '../economy/shop.ts';
+import { isMaxed, nextPrice, type ShopItemId, type ShopLevels } from '../economy/shop.ts';
 import { playSfx } from '../audio/sfx.ts';
 
 // Round 7: enlarged alongside the 2x UI text (see DECISIONS.md) — panel
@@ -10,10 +10,18 @@ const PANEL_W = 860;
 const PANEL_H = 760;
 const ROW_H = 62;
 const TAB_H = 56;
-const TAB_W = 260;
+// Phase 4: narrowed from 260 to fit 3 tabs (was 2: Weapons/Base) across the
+// same PANEL_W without growing the panel itself.
+const TAB_W = 190;
+const TAB_GAP = 16;
 const PRESS_FLASH_DURATION = 0.12; // seconds a clicked row briefly flashes/scales down
 
-export type ShopTab = 'weapons' | 'base';
+export type ShopTab = 'weapons' | 'base' | 'class';
+const TABS: { id: ShopTab; label: string }[] = [
+  { id: 'weapons', label: 'Weapons' },
+  { id: 'base', label: 'Base' },
+  { id: 'class', label: 'Class' },
+];
 
 type HoverTarget = { kind: 'tab'; tab: ShopTab } | { kind: 'row'; id: ShopItemId } | null;
 
@@ -46,8 +54,10 @@ export class ShopPanel {
 
     const tabY = y + 76;
     if (my >= tabY && my <= tabY + TAB_H) {
-      if (mx >= x + 24 && mx <= x + 24 + TAB_W) return { kind: 'tab', tab: 'weapons' };
-      if (mx >= x + 24 + TAB_W + 20 && mx <= x + 24 + TAB_W + 20 + TAB_W) return { kind: 'tab', tab: 'base' };
+      for (let i = 0; i < TABS.length; i++) {
+        const tx = x + 24 + i * (TAB_W + TAB_GAP);
+        if (mx >= tx && mx <= tx + TAB_W) return { kind: 'tab', tab: TABS[i].id };
+      }
       return null;
     }
 
@@ -95,6 +105,10 @@ export class ShopPanel {
     }
 
     const id = target.id;
+    if (isMaxed(id, levels)) {
+      playSfx('uiClick', 0.3);
+      return true;
+    }
     const cost = nextPrice(id, levels);
     if (coins >= cost) {
       onBuy(id, cost);
@@ -129,10 +143,12 @@ export class ShopPanel {
     ctx.textAlign = 'left';
 
     const tabY = y + 76;
-    const weaponsHovered = this.hover?.kind === 'tab' && this.hover.tab === 'weapons';
-    const baseHovered = this.hover?.kind === 'tab' && this.hover.tab === 'base';
-    this.drawTab(ctx, x + 24, tabY, TAB_W, TAB_H, 'Weapons', this.activeTab === 'weapons', weaponsHovered);
-    this.drawTab(ctx, x + 24 + TAB_W + 20, tabY, TAB_W, TAB_H, 'Base', this.activeTab === 'base', baseHovered);
+    for (let i = 0; i < TABS.length; i++) {
+      const tab = TABS[i];
+      const tx = x + 24 + i * (TAB_W + TAB_GAP);
+      const hovered = this.hover?.kind === 'tab' && this.hover.tab === tab.id;
+      this.drawTab(ctx, tx, tabY, TAB_W, TAB_H, tab.label, this.activeTab === tab.id, hovered);
+    }
 
     const rows = this.rowsForTab(this.activeTab);
     const listTop = tabY + TAB_H + 18;
@@ -141,8 +157,9 @@ export class ShopPanel {
       const id = rows[i];
       const def = SHOP_ITEMS.find((d) => d.id === id)!;
       const level = levels[id];
+      const maxed = isMaxed(id, levels);
       const cost = nextPrice(id, levels);
-      const affordable = coins >= cost;
+      const affordable = !maxed && coins >= cost;
       const rowY = listTop + i * ROW_H;
       const hovered = this.hover?.kind === 'row' && this.hover.id === id;
       const pressed = this.pressedRow === id && this.pressFlashTimer > 0;
@@ -175,17 +192,17 @@ export class ShopPanel {
 
       ctx.font = '26px sans-serif';
       ctx.fillStyle = affordable ? '#f0f0f0' : '#6b7280';
-      ctx.fillText(`${def.label}  (Lv ${level})`, x + 24, rowY + 16);
+      ctx.fillText(maxed ? def.label : `${def.label}  (Lv ${level})`, x + 24, rowY + 16);
 
       const { current, next } = describeItem(id, levels);
       ctx.fillStyle = affordable ? '#9fd3ff' : '#5a6472';
       ctx.font = '22px sans-serif';
-      ctx.fillText(`${current} -> ${next}`, x + 460, rowY + 19);
+      ctx.fillText(maxed ? current : `${current} -> ${next}`, x + 460, rowY + 19);
 
       ctx.font = '26px sans-serif';
-      ctx.fillStyle = affordable ? '#ffd700' : '#6b7280';
+      ctx.fillStyle = maxed ? '#5ec96a' : affordable ? '#ffd700' : '#6b7280';
       ctx.textAlign = 'right';
-      ctx.fillText(`${cost}c`, x + w - 24, rowY + 16);
+      ctx.fillText(maxed ? 'OWNED' : `${cost}c`, x + w - 24, rowY + 16);
       ctx.textAlign = 'left';
       ctx.restore();
     }

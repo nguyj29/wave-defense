@@ -5,7 +5,7 @@
 // Layout is computed by two small helper functions shared between drawing
 // and hit-testing, so a click always lands on exactly what was drawn.
 
-import { DIFFICULTY, PLAYER_CLASSES, type DifficultyId, type PlayerClassId } from '../config.ts';
+import { DIFFICULTY, PLAYER_CLASSES, RISK_MODIFIER, type DifficultyId, type PlayerClassId } from '../config.ts';
 
 const ORDER: DifficultyId[] = ['easy', 'normal', 'hard', 'veryHard', 'hell'];
 export const DIFFICULTY_ORDER = ORDER;
@@ -73,6 +73,7 @@ export function drawStartScreen(
   screenH: number,
   selectedDifficulty: DifficultyId,
   selectedClass: PlayerClassId,
+  riskMode: boolean,
 ): void {
   ctx.save();
   ctx.fillStyle = 'rgba(6,10,8,0.94)';
@@ -156,6 +157,18 @@ export function drawStartScreen(
     'Click a difficulty/class, or 1-5 (difficulty) / Q W E R (class) / arrows — Enter or click START to begin',
     screenW / 2,
     sb.y + sb.h + 46,
+  );
+
+  // Phase 4: opt-in risk-for-reward modifier — a separate toggle from the
+  // main difficulty tier, off by default.
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillStyle = riskMode ? '#ff6b5e' : '#6b7280';
+  ctx.fillText(
+    riskMode
+      ? `RISK MODE: ON (T to toggle) — enemies x${RISK_MODIFIER.enemyMult}, rewards x${RISK_MODIFIER.rewardMult}`
+      : 'Risk Mode: off (press T to opt into extra enemy power for extra coin/gem rewards)',
+    screenW / 2,
+    sb.y + sb.h + 80,
   );
 
   ctx.restore();

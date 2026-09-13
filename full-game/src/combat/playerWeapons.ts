@@ -3,7 +3,16 @@ import type { WorldContext } from '../entities/context.ts';
 import { createProjectile } from '../entities/factory.ts';
 import type { Entity } from '../entities/types.ts';
 import type { ShopLevels } from '../economy/shop.ts';
-import { pistolDamage, pistolFireRate, rifleDamage, rifleMagazine } from '../economy/shop.ts';
+import {
+  grenadeBlastRadius,
+  grenadeDamage,
+  maceDamage,
+  maceSelfHealBonus,
+  pistolDamage,
+  pistolFireRate,
+  rifleDamage,
+  rifleMagazine,
+} from '../economy/shop.ts';
 import { applyDamage } from './damage.ts';
 import { playSfx } from '../audio/sfx.ts';
 import { pulseHaptic } from '../audio/haptics.ts';
@@ -109,11 +118,11 @@ export function updatePlayerWeapon(
   const def = WEAPONS[state.current];
 
   if (def.kind === 'melee') {
-    fireMelee(state, player, aimAngle, def, classDef, ctx);
+    fireMelee(state, player, aimAngle, def, classDef, levels, ctx);
     return { fired: true };
   }
   if (def.kind === 'thrown') {
-    fireThrown(state, player, def, aimTargetX, aimTargetY, ctx);
+    fireThrown(state, player, def, aimTargetX, aimTargetY, levels, ctx);
     return { fired: true };
   }
   return fireGun(state, levels, player, aimAngle, def, ctx);
@@ -171,10 +180,12 @@ function fireMelee(
   aimAngle: number,
   def: (typeof WEAPONS)['mace'],
   classDef: PlayerClassDef,
+  levels: ShopLevels,
   ctx: WorldContext,
 ): void {
   const halfArc = ((def.meleeArcDeg ?? 90) * Math.PI) / 180 / 2;
   const candidates = ctx.grid.queryRadius(player.x, player.y, def.range);
+  const damage = maceDamage(levels); // Phase 4: shop-upgradeable, see economy/shop.ts
   let hitAny = false;
   for (const t of candidates) {
     if (t === player || t.dead || !t.health || t.faction === player.faction) continue;
@@ -185,13 +196,15 @@ function fireMelee(
     let diff = Math.abs(Math.atan2(dy, dx) - aimAngle);
     if (diff > Math.PI) diff = Math.PI * 2 - diff;
     if (diff > halfArc) continue;
-    applyDamage(t, def.damageBase);
+    applyDamage(t, damage);
     hitAny = true;
   }
   if (hitAny) {
-    // Macer's passive: a little self-heal on every connecting swing.
-    if (classDef.meleeSelfHealPerHit > 0 && player.health) {
-      player.health.hp = Math.min(player.health.maxHp, player.health.hp + classDef.meleeSelfHealPerHit);
+    // Macer's passive: a little self-heal on every connecting swing,
+    // further upgradeable via the Class-tab shop item (Phase 4).
+    const heal = classDef.meleeSelfHealPerHit + maceSelfHealBonus(levels);
+    if (heal > 0 && player.health) {
+      player.health.hp = Math.min(player.health.maxHp, player.health.hp + heal);
     }
     playSfx('allyHit'); // reuse the existing "thwack" tone — a dedicated mace SFX is a nice-to-have, not load-bearing
   }
@@ -214,6 +227,7 @@ function fireThrown(
   def: (typeof WEAPONS)['grenade'],
   aimTargetX: number,
   aimTargetY: number,
+  levels: ShopLevels,
   ctx: WorldContext,
 ): void {
   const dx = aimTargetX - player.x;
@@ -228,8 +242,8 @@ function fireThrown(
     targetX,
     targetY,
     speed: def.bulletSpeed,
-    damage: def.damageBase,
-    impactRadius: def.blastRadius ?? 100,
+    damage: grenadeDamage(levels), // Phase 4: shop-upgradeable
+    impactRadius: grenadeBlastRadius(levels), // Phase 4: shop-upgradeable
     burnDuration: 0,
     burnDps: 0,
     burnRadius: 0,

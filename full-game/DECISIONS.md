@@ -463,3 +463,114 @@ to `computeRunGrade` confirmed both hard gates fire exactly as designed
 is passed, and a near-perfect history with one wave's Mastery at 150/200
 grades "S" instead of "SS" even though its raw percentage alone would
 clear the SS cutoff).
+
+## Phase 4 — full shop/economy, ally unlocks, opt-in risk modifier
+
+### Three-tab shop
+
+`ui/shopPanel.ts`'s `ShopTab` grew from `'weapons' | 'base'` to add
+`'class'` — a tab loop replaced the old two hardcoded tab draw calls, so a
+future 4th tab is a one-line addition to the `TABS` array. `TAB_W` shrank
+210->190 to fit 3 tabs across the same panel width rather than widening the
+whole panel.
+
+### Ally-type unlocks + per-type upgrades
+
+Two new one-time-unlock items in the Base tab (`unlockArcherAlly`,
+`unlockGuardianAlly`) widen the existing random ally-spawn pool
+(`config.ts::ALLY_TYPES`, `economy/shop.ts::unlockedAllyTypes`) — both
+spawners and the player's own summon cast now pick uniformly among every
+currently-unlocked type each time they create an ally, rather than always
+spawning the one original melee triangle. **Judgment call**: no separate
+"which type to spawn" UI was built — unlocking a type just adds it to the
+existing random pool, keeping the shop as the only place types are chosen
+at all (simpler than a second per-spawner-or-summon-source type-selection
+control, and consistent with how the rest of the ally system has no manual
+targeting either).
+- **Archer ally**: a ranged unit (0.75x HP, no melee component at all,
+  fires like the enemy archer at 1.4x melee-damage-equivalent). Needed a
+  genuinely new ally behavior — `entities/behaviors/ally.ts::
+  updateRangedAlly` mirrors the enemy archer's kiting shape
+  (`updateKiter`) rather than sharing code with it directly, since ally vs.
+  enemy AI already don't share a base function in this codebase.
+- **Guardian ally**: no new behavior needed at all — just stat multipliers
+  (2.2x HP, 0.7x speed, 1.3x melee damage, diamond shape) layered onto the
+  existing melee ally behavior. Another case (like Phase 1's
+  rusher/bomber) of a new unit needing zero new AI code.
+- **New `ShopItemDef.oneTimeUnlock` flag** + `economy/shop.ts::isMaxed()`
+  generalizes "buyable exactly once" beyond ally unlocks — `buyItem()` and
+  `ShopPanel` both check it (refusing/graying out a maxed row, showing
+  "OWNED" instead of a price) so a future one-time item (a door, a class
+  perk) reuses the same mechanism rather than needing its own special case.
+- **New Class-tab items**: `maceDamage`/`maceSelfHeal` (macer) and
+  `grenadeDamage`/`grenadeBlastRadius` (bomber) — the per-class weapon
+  upgrades explicitly deferred in Phase 2. Rifle/pistol/summon stay on the
+  Weapons tab (every class can reach at least one of them), reserving
+  Class for weapons genuinely exclusive to one class.
+
+### Door HP shop item (Phase 5 dependency, noted explicitly)
+
+Added `doorHp` (Base tab) and `economy/shop.ts::doorMaxHp()` now, per the
+brief's Phase 4 scope, even though doors themselves don't exist as
+entities until Phase 5. Buying levels today is inert (nothing reads the
+value yet) but harmless; Phase 5's door implementation is expected to call
+`doorMaxHp(shopLevels)` the same way `coreMaxHp()` is already consumed by
+`Game.reset()`/`buyItem()`. Flagged clearly so this isn't mistaken for a
+forgotten wiring bug — it's an intentional forward stub.
+
+### Re-derived 25-wave price curve / coin-yield payoff at wave 12-18
+
+`economy/devReadout.ts::computeGemChancePayoff()` had a latent bug once
+`WAVES.length` grew past 5 (Phase 3): it read a hardcoded 5-entry
+`EXPECTED_KILLS_PER_WAVE` array and indexed it by wave number for the
+entire loop, producing `undefined`/`NaN` for wave 6 onward. Fixed by
+deriving the "kills per wave" proxy from each `WaveDef`'s own real
+archetype-count total instead of a stale hand-typed array, and iterating
+the payoff simulation over the full `WAVES.length` (25) waves.
+
+With that fixed, the Gem Chance item's `base` cost was recalibrated from
+20 to **500** (worked out empirically against the real 25-wave enemy-count
+curve — see the arithmetic in the commit history / this session's working
+notes) so that, at the current `waveDurationScaleFactor` (~0.48, since the
+25-wave average duration is well under the 180s baseline): level 1 (cost
+~240) pays off around **wave 12**, and level 2 (cost ~480) around **wave
+18** — landing exactly on the brief's "wave 12-18" target. This is the
+one Phase 4 change that's genuinely calibrated against real numbers rather
+than picked by feel; still flagged as a candidate for a second pass once
+actual playtested coin-income data exists (this used the archetype
+roster's un-generation-scaled midpoint values as the income proxy, same
+caveat as `waveCoinsPar()` in Phase 3's scoring system).
+
+### Opt-in risk-for-reward modifier
+
+A single boolean (`Game.riskMode`, toggled with **T** on the start
+screen, off by default, persists across resets like difficulty/class) that
+multiplies enemy HP/damage by `RISK_MODIFIER.enemyMult` (1.25x) and
+coin/gem rewards by `RISK_MODIFIER.rewardMult` (1.35x), composed
+multiplicatively on top of whatever the main Easy-Hell difficulty tier
+already contributes — implemented as two local multiplier variables
+(`enemyHpMult`/`enemyDmgMult`) computed once in
+`spawnEnemyFromRequest` and threaded through every place that used to read
+`diff.enemyHpMult`/`diff.enemyDmgMult` directly. **Judgment call**: the
+brief asked for "a separate settable value" without specifying leveled vs.
+boolean — a flat on/off toggle was chosen over a numeric dial for
+simplicity; if playtesting wants finer-grained risk selection, this is the
+one obvious place `RISK_MODIFIER` would grow into a small array of tiers
+instead of a single constant pair.
+
+### Verified live vs. code-review only
+
+Live-verified: the 3-tab shop's tab ids are all reachable; buying an
+ally-type unlock widens `unlockedAllyTypes()`'s result and a second
+purchase attempt is refused (coins unchanged, level stays capped at 1);
+summoning after both unlocks produces allies of the new archetypes (archer
+and guardian both observed; a `basic`-type draw wasn't captured within the
+small sample this particular test's summon-cap allowed, which is expected
+sampling variance from a uniform 3-way random pick over few actual spawns,
+not a bug — the underlying pick is a plain uniform `Math.random()` index);
+mace/grenade shop-upgraded damage values match their `damagePerLevel`
+exactly; risk mode's enemy HP multiplier applied exactly (30 base grunt HP
+-> 38, matching `30 * 1.25` rounded). Code-review only: the shop panel's
+visual "OWNED" state rendering and the start screen's risk-mode text
+line/color (their underlying data — `isMaxed`, `riskMode` — were verified
+directly; the pixel output was not screenshotted).

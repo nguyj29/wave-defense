@@ -1,4 +1,4 @@
-import { ALLY, CORE, ENEMIES, PLAYER, type EnemyArchetypeId, type EnemyDef } from '../config.ts';
+import { ALLY, ALLY_TYPES, CORE, ENEMIES, PLAYER, type AllyTypeId, type EnemyArchetypeId, type EnemyDef } from '../config.ts';
 import type { Entity, Faction } from './types.ts';
 import { allocEntityId } from './types.ts';
 
@@ -40,21 +40,42 @@ export interface AllySpec {
   meleeRate: number;
   summonedByPlayer: boolean;
   spawnerId?: number;
+  // Phase 4: which ally archetype this is (see config.ts::ALLY_TYPES) —
+  // applies that type's stat multipliers/shape/color/ranged component on
+  // top of the base hp/speed/meleeDamage/meleeRate above. Defaults to
+  // 'basic' (the prototype's original, only, ally) so every existing call
+  // site keeps working unchanged.
+  allyType?: AllyTypeId;
 }
 
 export function createAlly(x: number, y: number, spec: AllySpec): Entity {
+  const type = ALLY_TYPES[spec.allyType ?? 'basic'];
   const e = base('ally', 'player', x, y);
   e.radius = ALLY.radius;
-  e.color = ALLY.color;
-  e.shape = 'triangle';
-  e.health = { hp: spec.hp, maxHp: spec.hp };
+  e.color = type.color;
+  e.shape = type.shape;
+  const hp = spec.hp * type.hpMult;
+  e.health = { hp, maxHp: hp };
   e.regen = { rate: spec.regenRate, alwaysOn: true, delay: 0, timeSinceDamage: 0 };
-  e.melee = { damage: spec.meleeDamage, rate: spec.meleeRate, cooldown: 0, range: 0 };
+  if (type.meleeDamageMult > 0) {
+    e.melee = { damage: spec.meleeDamage * type.meleeDamageMult, rate: spec.meleeRate * type.meleeRateMult, cooldown: 0, range: 0 };
+  }
+  if (type.ranged) {
+    e.ranged = {
+      damage: spec.meleeDamage * type.ranged.damageMult,
+      rate: type.ranged.rate,
+      cooldown: 0,
+      projectileSpeed: type.ranged.projectileSpeed,
+      range: type.ranged.range,
+      kiteDistance: type.ranged.kiteDistance,
+    };
+  }
   e.ai = { state: 'idle', targetId: null, strafeDir: 1, facingRefreshTimer: 0 };
   e.summonedByPlayer = spec.summonedByPlayer;
   e.spawnerId = spec.spawnerId;
-  e.speedStat = spec.speed;
+  e.speedStat = spec.speed * type.speedMult;
   e.aggroRadius = ALLY.aggroRadius;
+  e.archetype = type.id; // reused loosely for ally type too — see entities/behaviors/ally.ts
   return e;
 }
 

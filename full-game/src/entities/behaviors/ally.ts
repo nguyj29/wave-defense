@@ -1,5 +1,5 @@
 import { ALLY, CORE } from '../../config.ts';
-import { tryMeleeAttack } from '../../combat/weapons.ts';
+import { tryMeleeAttack, tryRangedAttack } from '../../combat/weapons.ts';
 import type { WorldContext } from '../context.ts';
 import { applySteeringNoise } from '../movement.ts';
 import { findNearest } from '../targeting.ts';
@@ -21,6 +21,16 @@ export function updateAlly(e: Entity, ctx: WorldContext): void {
   const engageRadius = e.aggroRadius ?? ALLY.aggroRadius;
   const target = findNearest(ctx, e, { kinds: ['enemy'], maxRadius: engageRadius });
   const speed = e.speedStat ?? ALLY.speed;
+
+  // Phase 4: a ranged ally (the "archer" type — see config.ts::ALLY_TYPES
+  // and entities/factory.ts) kites its target instead of closing to melee
+  // contact, mirroring the enemy archer's own kite behavior
+  // (entities/behaviors/enemy.ts::updateKiter) rather than introducing a
+  // third copy of that same shape.
+  if (target && e.ranged) {
+    updateRangedAlly(e, ctx, target, speed);
+    return;
+  }
 
   if (target) {
     const dx = target.x - e.x;
@@ -93,4 +103,40 @@ export function updateAlly(e: Entity, ctx: WorldContext): void {
   e.vx = ivx;
   e.vy = ivy;
   if (ispeed > 1) e.angle = Math.atan2(ivy, ivx);
+}
+
+/** Phase 4: ranged-ally (archer type) kiting — see updateAlly's dispatch above. */
+function updateRangedAlly(e: Entity, ctx: WorldContext, target: Entity, speed: number): void {
+  if (!e.ai || !e.ranged) return;
+  const dx = target.x - e.x;
+  const dy = target.y - e.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const kiteDistance = e.ranged.kiteDistance ?? 300;
+
+  if (dist <= e.ranged.range) {
+    tryRangedAttack(e, target.x, target.y, ctx);
+  }
+
+  const tolerance = 30;
+  e.angle = Math.atan2(dy, dx);
+  if (dist < kiteDistance - tolerance) {
+    e.ai.state = 'kite';
+    e.vx = (-dx / dist) * speed;
+    e.vy = (-dy / dist) * speed;
+  } else if (dist > kiteDistance + tolerance) {
+    e.ai.state = 'advance';
+    e.vx = (dx / dist) * speed;
+    e.vy = (dy / dist) * speed;
+  } else {
+    e.ai.state = 'strafe';
+    const perpX = -dy / dist;
+    const perpY = dx / dist;
+    e.vx = perpX * speed * e.ai.strafeDir;
+    e.vy = perpY * speed * e.ai.strafeDir;
+    e.ai.facingRefreshTimer -= ctx.dt;
+    if (e.ai.facingRefreshTimer <= 0) {
+      e.ai.strafeDir *= -1;
+      e.ai.facingRefreshTimer = 1.5 + Math.random() * 1.5;
+    }
+  }
 }

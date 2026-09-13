@@ -1,4 +1,17 @@
-import { ALLY, BASE, CORE, GEM, SHOP_ITEMS, SUMMON, WAVES, WAVE_DESIGN_BASELINE_DURATION_SEC, WEAPONS, type ShopItemDef } from '../config.ts';
+import {
+  ALLY,
+  ALLY_TYPES,
+  BASE,
+  CORE,
+  GEM,
+  SHOP_ITEMS,
+  SUMMON,
+  WAVES,
+  WAVE_DESIGN_BASELINE_DURATION_SEC,
+  WEAPONS,
+  type AllyTypeId,
+  type ShopItemDef,
+} from '../config.ts';
 
 export type ShopItemId =
   | 'rifleDamage'
@@ -13,7 +26,14 @@ export type ShopItemId =
   | 'spawnerOutput'
   | 'spawnerCapacity'
   | 'allyStrength'
-  | 'gemChance';
+  | 'gemChance'
+  | 'unlockArcherAlly'
+  | 'unlockGuardianAlly'
+  | 'doorHp'
+  | 'maceDamage'
+  | 'maceSelfHeal'
+  | 'grenadeDamage'
+  | 'grenadeBlastRadius';
 
 export type ShopLevels = Record<ShopItemId, number>;
 
@@ -32,6 +52,13 @@ export function createInitialShopLevels(): ShopLevels {
     spawnerCapacity: 0,
     allyStrength: 0,
     gemChance: 0,
+    unlockArcherAlly: 0,
+    unlockGuardianAlly: 0,
+    doorHp: 0,
+    maceDamage: 0,
+    maceSelfHeal: 0,
+    grenadeDamage: 0,
+    grenadeBlastRadius: 0,
   };
 }
 
@@ -66,6 +93,12 @@ export function priceForLevel(def: ShopItemDef, level: number): number {
 /** Cost to go from the current level to the next. */
 export function nextPrice(id: ShopItemId, levels: ShopLevels): number {
   return priceForLevel(getItemDef(id), levels[id] + 1);
+}
+
+/** True once a one-time-unlock item (see ShopItemDef.oneTimeUnlock) can no longer be purchased again — level 1 is its max. */
+export function isMaxed(id: ShopItemId, levels: ShopLevels): boolean {
+  const def = getItemDef(id);
+  return !!def.oneTimeUnlock && levels[id] >= 1;
 }
 
 // --- Derived gameplay stats -------------------------------------------------
@@ -130,4 +163,40 @@ export function spawnerAllyDamage(levels: ShopLevels): number {
 export function effectiveGemChance(levels: ShopLevels, isBoss: boolean): number {
   const base = isBoss ? GEM.dropChanceBoss : GEM.dropChanceBase;
   return Math.max(0, Math.min(1, base + levels.gemChance * GEM.chancePerLevel));
+}
+
+// --- Phase 4: ally-type unlocks, door HP, per-class weapon upgrades --------
+
+export function isAllyTypeUnlocked(levels: ShopLevels, type: AllyTypeId): boolean {
+  if (type === 'basic') return true;
+  if (type === 'archer') return levels.unlockArcherAlly >= 1;
+  return levels.unlockGuardianAlly >= 1;
+}
+
+/** Every currently-unlocked ally type, for the spawner/summon random pick — see entities/spawnerSystem.ts and game.ts::trySummon. */
+export function unlockedAllyTypes(levels: ShopLevels): AllyTypeId[] {
+  return (Object.keys(ALLY_TYPES) as AllyTypeId[]).filter((t) => isAllyTypeUnlocked(levels, t));
+}
+
+// Phase 5 is expected to spend this the same way coreMaxHp() is spent today
+// (doors don't exist as entities yet — see SHOP_ITEMS.doorHp's comment).
+const DOOR_BASE_HP = 300;
+const DOOR_HP_PER_LEVEL = 60;
+export function doorMaxHp(levels: ShopLevels): number {
+  return DOOR_BASE_HP + levels.doorHp * DOOR_HP_PER_LEVEL;
+}
+
+export function maceDamage(levels: ShopLevels): number {
+  return WEAPONS.mace.damageBase + levels.maceDamage * WEAPONS.mace.damagePerLevel;
+}
+const MACE_SELF_HEAL_PER_LEVEL = 0.6;
+export function maceSelfHealBonus(levels: ShopLevels): number {
+  return levels.maceSelfHeal * MACE_SELF_HEAL_PER_LEVEL;
+}
+export function grenadeDamage(levels: ShopLevels): number {
+  return WEAPONS.grenade.damageBase + levels.grenadeDamage * WEAPONS.grenade.damagePerLevel;
+}
+const GRENADE_BLAST_RADIUS_PER_LEVEL = 6;
+export function grenadeBlastRadius(levels: ShopLevels): number {
+  return (WEAPONS.grenade.blastRadius ?? 100) + levels.grenadeBlastRadius * GRENADE_BLAST_RADIUS_PER_LEVEL;
 }

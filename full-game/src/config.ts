@@ -1153,10 +1153,16 @@ export const GEM = {
 // ---------------------------------------------------------------------------
 export interface ShopItemDef {
   id: string;
-  tab: 'weapons' | 'base';
+  tab: 'weapons' | 'base' | 'class';
   label: string;
   base: number;
   exponent: number;
+  // Phase 4: a one-time unlock (like an ally type) rather than an
+  // indefinitely-purchasable stat level — the shop UI still uses the same
+  // level/price machinery (price(1) is simply its one cost), but level is
+  // capped at 1 and describe.ts shows "Unlocked"/"Locked" instead of a
+  // before/after stat delta.
+  oneTimeUnlock?: boolean;
 }
 
 export const SHOP_ITEMS: ShopItemDef[] = [
@@ -1177,13 +1183,116 @@ export const SHOP_ITEMS: ShopItemDef[] = [
   // the steeper exponent 1.0 (not the standard 0.75) rather than the
   // standard curve, since a rising gem chance is a compounding-ish income
   // multiplier much like coin yield was.
-  { id: 'gemChance', tab: 'base', label: 'Gem Chance', base: 20, exponent: 1.0 },
+  //
+  // Phase 4: base recalibrated from 20 to 500 against the real 25-wave
+  // economy (was tuned only against the prototype's 5-wave one) so its
+  // payoff — per the brief's "coin-yield payoff moved to wave 12-18" —
+  // actually lands there: level 1 (cost ~240 at the current
+  // waveDurationScaleFactor) pays off around wave 12, level 2 (~480) around
+  // wave 18. See economy/devReadout.ts::computeGemChancePayoff and
+  // DECISIONS.md for the worked numbers.
+  { id: 'gemChance', tab: 'base', label: 'Gem Chance', base: 500, exponent: 1.0 },
+  // Phase 4: ally-type unlocks (base tab) — one-time purchases that add a
+  // new ally archetype to the spawner/summon rotation (see
+  // config.ts::ALLY_TYPES, entities/factory.ts, entities/behaviors/ally.ts).
+  { id: 'unlockArcherAlly', tab: 'base', label: 'Unlock Archer Ally', base: 220, exponent: 1, oneTimeUnlock: true },
+  { id: 'unlockGuardianAlly', tab: 'base', label: 'Unlock Guardian Ally', base: 260, exponent: 1, oneTimeUnlock: true },
+  // Phase 4: door HP upgrade — the shop item exists now (per the brief's
+  // Phase 4 scope), but doors themselves don't exist as entities until
+  // Phase 5 ("doors with HP blocking movement"). Buying levels here is
+  // harmless today (nothing reads doorHp yet) and Phase 5's door
+  // implementation is expected to call `economy/shop.ts::doorMaxHp(levels)`
+  // the same way `coreMaxHp` already works — see DECISIONS.md.
+  { id: 'doorHp', tab: 'base', label: 'Door HP', base: 22, exponent: 0.75 },
+  // Phase 4: per-class weapon upgrades (Class tab) — mace/grenade had no
+  // shop path at all through Phase 2 (deferred explicitly, see that
+  // phase's DECISIONS.md entry); rifle/pistol/summon stay on the Weapons
+  // tab since every class can reach them (pistol/summon) or they're
+  // assault's signature weapon (rifle), whereas these four are each truly
+  // one class's own weapon.
+  { id: 'maceDamage', tab: 'class', label: 'Mace Damage', base: 22, exponent: 0.75 },
+  { id: 'maceSelfHeal', tab: 'class', label: 'Mace Self-Heal', base: 20, exponent: 0.8 },
+  { id: 'grenadeDamage', tab: 'class', label: 'Grenade Damage', base: 24, exponent: 0.75 },
+  { id: 'grenadeBlastRadius', tab: 'class', label: 'Grenade Blast Radius', base: 20, exponent: 0.8 },
 ];
 
-// Base-tab TODO (not built in this MVP — see DECISIONS.md):
-//   - ally type unlocks
-//   - wall / door HP upgrades
-//   - opt-in risk-for-reward difficulty modifier (separate settable value)
+// ---------------------------------------------------------------------------
+// Ally types (Phase 4) — the always-available 'basic' melee ally (unchanged
+// from the prototype) plus two purchasable unlocks. Once unlocked, both
+// spawners and the player's own summon cast include the new type(s) in
+// their random pick (see entities/spawnerSystem.ts and
+// game.ts::trySummon) — a judgment call: rather than a separate "which
+// type" UI, unlocking just widens the existing random-ally-spawn pool, so
+// the shop stays the only place types are chosen.
+// ---------------------------------------------------------------------------
+export type AllyTypeId = 'basic' | 'archer' | 'guardian';
+
+export interface AllyTypeDef {
+  id: AllyTypeId;
+  shape: 'triangle' | 'diamond';
+  color: string;
+  hpMult: number; // multiplies the caller's base HP (spawner or summon-derived)
+  speedMult: number;
+  meleeDamageMult: number;
+  meleeRateMult: number;
+  ranged?: {
+    damageMult: number; // relative to the caller's base melee damage, since allies have no separate "base ranged damage" stat today
+    rate: number;
+    projectileSpeed: number;
+    range: number;
+    kiteDistance: number;
+  };
+}
+
+export const ALLY_TYPES: Record<AllyTypeId, AllyTypeDef> = {
+  basic: {
+    id: 'basic',
+    shape: 'triangle',
+    color: '#3fa9f5',
+    hpMult: 1,
+    speedMult: 1,
+    meleeDamageMult: 1,
+    meleeRateMult: 1,
+  },
+  // Archer ally: a ranged unit that kites like the enemy archer instead of
+  // closing to melee — trades HP/melee damage for standoff range.
+  archer: {
+    id: 'archer',
+    shape: 'triangle',
+    color: '#7fd4ff',
+    hpMult: 0.75,
+    speedMult: 1.0,
+    meleeDamageMult: 0, // no melee component attached at all — see factory.ts
+    meleeRateMult: 0,
+    ranged: { damageMult: 1.4, rate: 0.6, projectileSpeed: 500, range: 420, kiteDistance: 320 },
+  },
+  // Guardian ally: slow, tanky melee — a frontline body to soak hits rather
+  // than a damage source.
+  guardian: {
+    id: 'guardian',
+    shape: 'diamond',
+    color: '#2f6fb0',
+    hpMult: 2.2,
+    speedMult: 0.7,
+    meleeDamageMult: 1.3,
+    meleeRateMult: 0.85,
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Opt-in risk-for-reward modifier (Phase 4) — separate from, and composed
+// multiplicatively with, the main Easy..Hell difficulty selector. Off by
+// default; the player toggles it on the start screen (does not change
+// mid-run) knowing it makes every wave harder in exchange for more coins —
+// a deliberate "I know what I'm doing" lever distinct from picking a harder
+// named difficulty tier. See DECISIONS.md for why a single flat toggle was
+// chosen over a leveled dial (the brief called for "a separate settable
+// value," which a boolean satisfies most simply).
+// ---------------------------------------------------------------------------
+export const RISK_MODIFIER = {
+  enemyMult: 1.25, // extra multiplier on enemy HP/damage when active, on top of the difficulty tier's own multiplier
+  rewardMult: 1.35, // extra multiplier on coin/gem payout when active
+};
 
 export const DEBUG = {
   spawnCycleTypes: ['grunt', 'archer', 'rusher', 'bomber', 'healer', 'fireMage', 'boss'] as const,

@@ -13,6 +13,7 @@ import {
   pickSpawnGeneration,
   PLAYER,
   PLAYER_CLASSES,
+  RISK_MODIFIER,
   SHOP,
   SUMMON,
   WAVES,
@@ -46,8 +47,10 @@ import {
   coreMaxHp,
   createInitialShopLevels,
   effectiveGemChance,
+  isMaxed,
   rifleMagazine,
   spawnerAllyDamage,
+  unlockedAllyTypes,
   spawnerAllyHp,
   spawnerCapacity,
   spawnerIntervalSeconds,
@@ -185,6 +188,9 @@ export class Game {
   // Phase 2 (full-game): player class, chosen on the start screen alongside
   // difficulty, persists across resets the same way.
   playerClass: PlayerClassId = 'assault';
+  // Phase 4: opt-in risk-for-reward modifier, toggled on the start screen
+  // (key T), off by default, persists across resets like difficulty/class.
+  riskMode = false;
 
   debug: DebugState = {
     overlay: false,
@@ -374,6 +380,7 @@ export class Game {
     if (input.wasPressed('KeyW')) this.playerClass = 'bomber';
     if (input.wasPressed('KeyE')) this.playerClass = 'macer';
     if (input.wasPressed('KeyR')) this.playerClass = 'summoner';
+    if (input.wasPressed('KeyT')) this.riskMode = !this.riskMode;
 
     if (input.wasMousePressed()) {
       const hit = hitTestStartScreen(input.mouseX, input.mouseY, this.camera.screenWidth, this.camera.screenHeight);
@@ -406,6 +413,7 @@ export class Game {
 
   private buyItem(id: ShopItemId, cost: number): void {
     if (this.coins < cost) return;
+    if (isMaxed(id, this.shopLevels)) return; // Phase 4: one-time unlocks (ally types) can't be bought past level 1
     this.coins -= cost;
     this.shopLevels[id]++;
     if (id === 'coreHp') {
@@ -592,10 +600,11 @@ export class Game {
       spawnerCapacity(this.shopLevels),
       spawnerAllyHp(this.shopLevels),
       spawnerAllyDamage(this.shopLevels),
+      unlockedAllyTypes(this.shopLevels),
     );
 
     // Enemy deaths -> coins/gems + kill tracking (each entity processed exactly once).
-    const rewardMult = DIFFICULTY[this.difficulty].rewardMult;
+    const rewardMult = DIFFICULTY[this.difficulty].rewardMult * (this.riskMode ? RISK_MODIFIER.rewardMult : 1);
     for (const e of this.entities) {
       if (e.kind === 'enemy' && e.dead && e.coinsMin !== undefined && !this.deathHandled.has(e.id)) {
         this.deathHandled.add(e.id);
@@ -793,9 +802,11 @@ export class Game {
     const maxAlive = Math.round(summonMaxAlive(this.shopLevels) * classMult);
     if (aliveSummoned >= maxAlive) return;
     const count = Math.min(Math.round(summonCount(this.shopLevels) * classMult), maxAlive - aliveSummoned);
+    const unlockedTypes = unlockedAllyTypes(this.shopLevels);
     for (let i = 0; i < count; i++) {
       const angle = (i / count) * Math.PI * 2;
       const scatter = SUMMON.summonRadiusScatter;
+      const allyType = unlockedTypes[Math.floor(Math.random() * unlockedTypes.length)];
       const ally = createAlly(x + Math.cos(angle) * scatter, y + Math.sin(angle) * scatter, {
         hp: summonAllyHp(this.shopLevels),
         regenRate: SUMMON.allyRegenRate,
@@ -803,6 +814,7 @@ export class Game {
         meleeDamage: ALLY.meleeDamage,
         meleeRate: ALLY.meleeRate,
         summonedByPlayer: true,
+        allyType,
       });
       this.entities.push(ally);
     }
@@ -848,6 +860,12 @@ export class Game {
     const diff = DIFFICULTY[this.difficulty];
     const waveNumber = this.waveManager.waveIndex + 1;
     const endless = endlessFactor(waveNumber);
+    // Phase 4: the opt-in risk modifier composes multiplicatively on top of
+    // whatever the main difficulty tier already contributes — see
+    // config.ts::RISK_MODIFIER.
+    const riskEnemyMult = this.riskMode ? RISK_MODIFIER.enemyMult : 1;
+    const enemyHpMult = diff.enemyHpMult * riskEnemyMult;
+    const enemyDmgMult = diff.enemyDmgMult * riskEnemyMult;
     // Phase 3: any of the 5 boss archetypes counts as "the boss" for
     // generation-offset purposes (generationForWave(wave, 1)), not just the
     // literal 'boss' key.
@@ -856,19 +874,19 @@ export class Game {
     const gen = generationScale(generation);
     const def = ENEMIES[kind];
     const override: Partial<EnemyDef> = {
-      hp: Math.round(def.hp * gen.hpDmg * diff.enemyHpMult * endless),
+      hp: Math.round(def.hp * gen.hpDmg * enemyHpMult * endless),
       speed: def.speed * gen.speed,
-      meleeDamage: Math.round(def.meleeDamage * gen.hpDmg * diff.enemyDmgMult * endless),
+      meleeDamage: Math.round(def.meleeDamage * gen.hpDmg * enemyDmgMult * endless),
       coinsMin: Math.max(1, Math.round(def.coinsMin * gen.coin)),
       coinsMax: Math.max(1, Math.round(def.coinsMax * gen.coin)),
     };
     if (def.ranged) {
-      override.ranged = { ...def.ranged, damage: Math.round(def.ranged.damage * gen.hpDmg * diff.enemyDmgMult * endless) };
+      override.ranged = { ...def.ranged, damage: Math.round(def.ranged.damage * gen.hpDmg * enemyDmgMult * endless) };
     }
     if (def.bomber) {
       override.bomber = {
         ...def.bomber,
-        detonationDamage: Math.round(def.bomber.detonationDamage * gen.hpDmg * diff.enemyDmgMult * endless),
+        detonationDamage: Math.round(def.bomber.detonationDamage * gen.hpDmg * enemyDmgMult * endless),
       };
     }
     if (def.healer) {
@@ -881,8 +899,8 @@ export class Game {
     if (def.fireMage) {
       override.fireMage = {
         ...def.fireMage,
-        damage: Math.round(def.fireMage.damage * gen.hpDmg * diff.enemyDmgMult * endless),
-        burnDps: def.fireMage.burnDps * gen.hpDmg * diff.enemyDmgMult * endless,
+        damage: Math.round(def.fireMage.damage * gen.hpDmg * enemyDmgMult * endless),
+        burnDps: def.fireMage.burnDps * gen.hpDmg * enemyDmgMult * endless,
       };
     }
     if (def.bossAbilities) {
@@ -892,8 +910,8 @@ export class Game {
       // generation boss shouldn't summon MORE adds, just hit harder).
       override.bossAbilities = def.bossAbilities.map((a) => ({
         ...a,
-        damage: a.damage !== undefined ? Math.round(a.damage * gen.hpDmg * diff.enemyDmgMult * endless) : undefined,
-        burnDps: a.burnDps !== undefined ? a.burnDps * gen.hpDmg * diff.enemyDmgMult * endless : undefined,
+        damage: a.damage !== undefined ? Math.round(a.damage * gen.hpDmg * enemyDmgMult * endless) : undefined,
+        burnDps: a.burnDps !== undefined ? a.burnDps * gen.hpDmg * enemyDmgMult * endless : undefined,
       }));
     }
     // Round 8: hue-shift the archetype's base color warmer, proportional to a
@@ -1223,7 +1241,7 @@ export class Game {
     if (this.endlessBannerTimer > 0) this.drawEndlessBanner();
 
     if (this.phase === 'start') {
-      drawStartScreen(ctx, w, h, this.difficulty, this.playerClass);
+      drawStartScreen(ctx, w, h, this.difficulty, this.playerClass, this.riskMode);
     }
 
     this.lastRenderMs = performance.now() - t0;
