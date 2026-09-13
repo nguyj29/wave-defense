@@ -11,7 +11,9 @@ export interface HudData {
   summonAliveCount: number;
   coins: number;
   waveNumber: number;
-  totalWaves: number;
+  // Round 8: true once past the 5 static WAVES entries (endless mode) — HUD
+  // drops the "/5" suffix and shows an "Endless" tag instead once true.
+  isEndless: boolean;
   enemiesAlive: number;
   wavePhase: 'running' | 'intermission' | 'allWavesComplete';
   timeRemaining: number;
@@ -197,7 +199,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, screenW: number, screenH:
   ctx.fillText(`Coins: ${d.coins}`, 16, 28);
 
   ctx.fillStyle = '#fff';
-  ctx.fillText(`Wave ${d.waveNumber}/${d.totalWaves}`, 16, 76);
+  ctx.fillText(d.isEndless ? `Wave ${d.waveNumber} (Endless)` : `Wave ${d.waveNumber}/5`, 16, 76);
   ctx.font = '26px sans-serif';
   ctx.fillStyle = '#cfd8e3';
   ctx.fillText(`Enemies alive: ${d.enemiesAlive}`, 16, 118);

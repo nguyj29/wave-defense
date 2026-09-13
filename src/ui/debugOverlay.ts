@@ -50,6 +50,10 @@ export interface SpawnReadoutData {
   clumpProgress: number;
   clumpTarget: number;
   pauseTimer: number;
+  // Round 8: current endless-wave escalation multiplier (1.0 at/before wave
+  // 5) — surfaced so F7 makes it obvious how much of the current rate/cap is
+  // endless scaling vs. difficulty.
+  endlessFactor: number;
 }
 
 export function drawSpawnReadout(ctx: CanvasRenderingContext2D, screenW: number, d: SpawnReadoutData): void {
@@ -75,6 +79,7 @@ export function drawSpawnReadout(ctx: CanvasRenderingContext2D, screenW: number,
     `wave time left: ${d.waveTimeRemaining.toFixed(0)}s`,
     `spawn point: ${d.activeSpawnPointId}`,
     d.pauseTimer > 0 ? `paused: ${d.pauseTimer.toFixed(1)}s` : `clump: ${d.clumpProgress}/${d.clumpTarget}`,
+    `endless factor: ${d.endlessFactor.toFixed(2)}x`,
   ];
   lines.forEach((line, i) => ctx.fillText(line, x + 16, y + 16 + i * 28));
 

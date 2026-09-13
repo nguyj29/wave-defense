@@ -381,6 +381,67 @@ export const WAVES: WaveDef[] = [
   { wave: 5, grunts: 40, archers: 24, boss: 1, durationSec: 60, intermissionSec: 60 },
 ];
 
+// ---------------------------------------------------------------------------
+// Endless mode (round 8): waves past WAVES.length (5) don't exist as static
+// data — they're synthesized from wave 5's shape by `getWaveDef()` below,
+// scaled by `endlessFactor()`. See DECISIONS.md for the exact formula and
+// worked examples at waves 10/15/20.
+// ---------------------------------------------------------------------------
+export const ENDLESS = {
+  // Per-wave-past-5 compounding growth rate applied to enemy HP/damage/spawn
+  // rate (via endlessFactor). Picked from the middle of the requested
+  // 1.08-1.15 band: noticeably harder each wave without spiking absurdly —
+  // see DECISIONS.md for waves 10/15/20 worked examples at Normal and Hell.
+  growthRate: 1.12,
+  // Wave-6+ enemy budget (grunts/archers) grows linearly off wave 5's counts
+  // so total spawned enemies keeps rough pace with the shrinking-relative
+  // pressure of a flat budget against an ever-rising spawn rate, capped so a
+  // very deep endless run doesn't spawn an unbounded number of entities per
+  // wave. Boss count is left at wave 5's (1) — the boss's own HP/damage
+  // already scale via endlessFactor, a second simultaneous boss is a
+  // separate, unrequested design decision.
+  budgetGrowthPerWavePastFive: 0.08,
+  maxBudgetScale: 3.0,
+};
+
+/**
+ * Escalating multiplier applied to enemy HP/damage/spawn-rate for endless
+ * waves (waveNumber > WAVES.length): `growthRate ^ (waveNumber - 5)`, 1.0 at
+ * or before wave 5. Composed multiplicatively with per-difficulty
+ * enemyHpMult/enemyDmgMult/spawnRateMult (see spawnEnemyFromRequest in
+ * game.ts and SpawnDirector's spawnRateMult), so Hell + a deep endless wave
+ * compounds — intentional, see DECISIONS.md.
+ */
+export function endlessFactor(waveNumber: number): number {
+  if (waveNumber <= WAVES.length) return 1.0;
+  return Math.pow(ENDLESS.growthRate, waveNumber - WAVES.length);
+}
+
+/**
+ * Returns the WaveDef for any 1-based wave number, including past
+ * WAVES.length: for wave 6+, synthesizes a WaveDef from WAVES' final entry
+ * (wave 5) with grunts/archers scaled up by a capped linear factor (boss
+ * count and durationSec/intermissionSec left as wave 5's). WAVES itself
+ * stays a fixed 5-element array — extending/tuning it is still a pure data
+ * edit, per the existing architecture.
+ */
+export function getWaveDef(waveNumber: number): WaveDef {
+  if (waveNumber <= WAVES.length) return WAVES[waveNumber - 1];
+  const base = WAVES[WAVES.length - 1];
+  const budgetScale = Math.min(
+    ENDLESS.maxBudgetScale,
+    1 + ENDLESS.budgetGrowthPerWavePastFive * (waveNumber - WAVES.length),
+  );
+  return {
+    wave: waveNumber,
+    grunts: Math.round(base.grunts * budgetScale),
+    archers: Math.round(base.archers * budgetScale),
+    boss: base.boss,
+    durationSec: base.durationSec,
+    intermissionSec: base.intermissionSec,
+  };
+}
+
 // The wave duration the shop's price curve was originally calibrated
 // against (see DECISIONS.md's coin-yield/gem-chance payoff sections). Used
 // by `economy/shop.ts::waveDurationScaleFactor()` to auto-scale prices

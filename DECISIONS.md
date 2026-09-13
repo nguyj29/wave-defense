@@ -1674,3 +1674,236 @@ the actual push order.
   actual play (vs. the old maze lanes) especially for archer-kiting near
   block corners; whether the bigger player/archer hitboxes change melee
   balance in ways that need a numeric follow-up.
+
+## Endless mode past wave 5, and difficulty/endless-scaled hue-shifted enemy colors (round 8)
+
+Two items requested in one pass. Numbers below are in `src/config.ts` unless noted.
+
+### 1. Endless mode
+
+**The old terminal state is gone.** `WaveManager.advanceToNextWave()` used to
+set `phase = 'allWavesComplete'` once `waveIndex >= WAVES.length - 1`, which
+`game.ts` turned into a `'victory'` game phase and a "PROTOTYPE COMPLETE"
+screen that ended the run. That branch is deleted entirely: wave 5 clearing
+now just advances to wave 6 through the exact same running→intermission→
+next-wave cycle every other wave transition uses, forever. `GamePhase`
+dropped `'victory'` and `WaveManager.WavePhase` keeps `'allWavesComplete'`
+only as an unreachable type member (nothing sets it anymore) rather than
+ripping out a type touched by `HudData`/`debugOverlay` call sites for no
+behavioral gain. **Death (player or core HP 0) is now the only way a run
+ends** — F4/Space-skip-intermission/the shop all keep working completely
+unchanged for wave 6+, since they only ever called the same
+`onWaveTransition()`/`debugForceAdvance()` paths that already worked for
+waves 1-5.
+
+**A one-time celebratory banner** ("WAVE 5 COMPLETE — ENDLESS MODE") marks
+the milestone without freezing the run: `WaveManager.justEnteredEndless`
+flips `true` for exactly one tick, the tick `advanceToNextWave()` moves off
+`waveIndex === WAVES.length - 1` (i.e. wave 5 → 6), and `game.ts`'s
+`onWaveTransition()` consumes that flag into a 3.5s fading
+`endlessBannerTimer` (drawn every frame it's `> 0`, faded over its last 0.8s)
+— purely a rendering/UI concern, no simulation state depends on it.
+
+**`WAVES` stays a fixed 5-element array**, per the architecture constraint.
+Wave 6+ is synthesized on demand by a new `getWaveDef(waveNumber)` in
+`config.ts`, which `WaveManager.currentWave` now calls (`getWaveDef(waveIndex
++ 1)`) instead of indexing `WAVES` directly:
+- `waveNumber <= WAVES.length` returns the real `WAVES[waveNumber-1]` entry,
+  unchanged.
+- `waveNumber > WAVES.length` synthesizes a `WaveDef` from `WAVES[4]` (wave
+  5's shape): same `boss` count (1) and `durationSec`/`intermissionSec`,
+  with `grunts`/`archers` scaled up by a capped linear `budgetScale = 1 +
+  ENDLESS.budgetGrowthPerWavePastFive * (waveNumber - 5)` (0.08/wave, capped
+  at `ENDLESS.maxBudgetScale = 3.0`, reached at wave 30 and held flat past
+  that). **Why scale the budget at all** (rather than repeating wave 5's
+  exact 40/24/1 forever, which the brief offered as the simpler option): the
+  spawn *rate* also escalates via `endlessFactor` (below), and with a flat
+  budget a higher rate just burns through the same number of enemies faster
+  — the wave would spend proportionally *less* of its 60s window actively
+  spawning as endless waves get deeper, which reads as "pressure peaks early
+  then goes quiet," not "the wave is doing more." A mild linear-and-capped
+  budget bump keeps total spawned enemies roughly in proportion to the
+  rate's own growth without letting per-wave headcount run away
+  unboundedly (the alive-cap, itself also endless-scaled — see below — is
+  the actual backstop against an unplayable on-screen entity count).
+  `getWaveForDifficulty()` (unchanged code, just now also receiving
+  synthesized wave defs) still applies its early-archer-intro logic
+  correctly since it only reads `base.wave`/`base.archers`, both of which
+  `getWaveDef` populates correctly for any wave number.
+
+**The escalation factor itself**, `endlessFactor(waveNumber)` in
+`config.ts`:
+
+```
+endlessFactor(w) = 1.0                          for w <= 5
+endlessFactor(w) = ENDLESS.growthRate ^ (w - 5) for w > 5
+```
+
+`ENDLESS.growthRate = 1.12` — the middle of the requested 1.08-1.15 band.
+Worked examples (composed multiplicatively with difficulty, per the brief —
+`effectiveSpawnRateMult() = DIFFICULTY[id].spawnRateMult * endlessFactor(waveNumber)`,
+used both for `SpawnDirector`'s rate/alive-cap scaling and, combined with
+`enemyHpMult`/`enemyDmgMult`, for per-enemy HP/damage in
+`spawnEnemyFromRequest`):
+
+| Wave | `endlessFactor` | Normal (mult=1.0) HP/dmg/spawn-rate | Hell (hpMult 2.5, dmgMult 2.2, spawnMult 1.8) HP / dmg / spawn-rate |
+|---|---|---|---|
+| 10 | 1.12^5 = **1.762** | 1.76x across the board | HP 4.41x / dmg 3.88x / rate 3.17x |
+| 15 | 1.12^10 = **3.106** | 3.11x across the board | HP 7.77x / dmg 6.83x / rate 5.59x |
+| 20 | 1.12^15 = **5.474** | 5.47x across the board | HP 13.68x / dmg 12.04x / rate 9.85x |
+
+Sanity check on "not too spiky, not trivial": going from wave 5 to wave 10
+(5 waves) is +76% across the board at Normal — a real step up but not a
+sudden wall; by wave 20 (15 waves past the static content) Normal enemies
+are at ~5.5x their wave-5 stats, which reads as "endless mode is genuinely
+a different, much harder regime by wave 20" without needing an exponent
+above ~1.15 (which would roughly double this: `1.15^15 ≈ 8.14x`, judged too
+steep for the same wave count) or below ~1.08 (`1.08^15 ≈ 3.17x`, judged to
+flatten out too gently to feel like it's "escalating" by wave 20). Hell
+stacking on top compounds as intended — a Hell wave-20 grunt hits for
+~12x its Normal-wave-5 damage, which is the explicitly-requested
+"harder difficulty and deeper endless progress should both matter"
+behavior, not a bug to soften.
+
+`SpawnDirector`'s own `spawnRateMult` constructor param (previously just
+`DIFFICULTY[id].spawnRateMult`) is now always `Game.effectiveSpawnRateMult()`
+— both `reset()` and `onWaveTransition()` construct it that way, so wave
+1-5 behavior is unchanged (`endlessFactor <= 5` is always `1.0`) and wave
+6+ automatically gets the composed scaling with no `SpawnDirector` code
+changes (it already had a `spawnRateMult` parameter from round 6's
+difficulty work).
+
+**HUD/debug**: `HudData.totalWaves` (always `5`) was replaced with
+`isEndless: boolean` (`waveIndex + 1 > WAVES.length`); the wave line reads
+`Wave 6/5`-style text only through wave 5 (`Wave N/5`) and switches to
+`Wave N (Endless)` once past it — no more claiming a 5-wave cap once the run
+has exceeded it. F7's spawn-director readout gained an `endless factor: X.XXx`
+line (the same `endlessFactor(waveNumber)` value) so it's visible how much
+of the current rate/cap comes from endless depth vs. difficulty at a
+glance, and its `aliveCap` field was fixed from a stale raw
+`SPAWN_DIRECTOR.aliveCap` constant read (which silently drifted from the
+truth the moment `spawnRateMult` started composing two factors) to the
+live `SpawnDirector.debugSnapshot().effectiveAliveCap` — same class of bug
+DECISIONS.md previously flagged and fixed for a hardcoded `aliveCap: 45`
+literal in round 3, now recurring for a different reason and fixed the same
+way.
+
+### 2. Difficulty/endless-scaled hue-shifted enemy colors
+
+**New `src/render/colorUtils.ts`** (checked `renderer.ts`/`rendererDetailed.ts`
+first — the only existing color helper there is `rendererDetailed.ts`'s
+`shade(hex, percent)`, a flat per-channel lighten/darken with no hue
+concept, not reusable for a hue rotation): hex→RGB→HSL→shift→RGB→hex, one
+public function `warmHexColor(hex, amount)`. `amount` is `0..1` (clamped);
+`0` returns the input unchanged (verified: a Normal-difficulty wave-1 grunt
+spawns with the exact literal `#8f00ff` from `ENEMIES.grunt.color`, not a
+near-miss from a no-op color round-trip). The hue shift moves the color's
+hue toward 0°/360° (red) **the short way around the wheel**: computed as
+`delta = ((0 - hue + 540) % 360) - 180` (the signed shortest angular
+distance from the base hue to 0, in `(-180, 180]`) and `newHue = hue + delta
+* amount`. For violet/indigo (~270-280°) this moves hue *upward* toward
+360 (wrapping to 0) — i.e. through magenta/pink toward red — since that's
+~85-90° away, versus ~270-280° the other way through blue/cyan/green/
+yellow; the near-red boss base color (~0°) barely moves either direction.
+Saturation gets a modest `+0.15 * amount` boost (capped at 1.0) for a more
+vivid "enraged" look at high warmth; lightness is left untouched so shape/
+brightness silhouette reads the same, only the hue/vividness changes.
+
+**Combined "power level" per spawned enemy**, computed in `game.ts`'s
+`spawnEnemyFromRequest` (the same function that already builds the `hp`/
+`meleeDamage`/`ranged.damage` override object from `diff.enemyHpMult`/
+`enemyDmgMult`):
+
+```
+powerLevel = diff.enemyHpMult * endlessFactor(waveNumber)
+warmth = clamp(1 - 1/powerLevel, 0, 1)
+```
+
+`enemyHpMult` was picked as the primary difficulty driver (over averaging
+every multiplier) because it's the stat every difficulty tier scales most
+aggressively and consistently (0.7x on Easy up to 2.5x on Hell) and it's
+already the natural "how much tankier is this enemy" signal; folding in
+`enemyDmgMult`/`spawnRateMult`/`rewardMult` too would just be redundant
+noise correlated with the same tier. `1 - 1/x` was chosen over a linear or
+raw-multiplier mapping specifically because it **saturates** — it's 0 at
+`powerLevel == 1` (Normal, wave ≤ 5: enemies look exactly like base
+`ENEMIES` colors, per the explicit "Easy wave-1 grunt looks close to normal
+violet" requirement) and asymptotically approaches but never reaches 1 as
+`powerLevel` grows without bound, so an extreme endless-wave/Hell
+combination can't "blow out" past pure red or wrap around into a new,
+confusing hue — it just gets asymptotically closer to fully red. Worked
+values: Hell wave 1 (`powerLevel = 2.5*1 = 2.5`) → `warmth = 0.6`; Hell wave
+10 (`powerLevel = 2.5*1.762 = 4.41`) → `warmth = 0.773`; Hell wave 20
+(`powerLevel = 2.5*5.474 = 13.68`) → `warmth = 0.927`; Normal wave 20
+(`powerLevel = 1*5.474 = 5.474`) → `warmth = 0.817` (endless depth alone,
+even at Normal difficulty, visibly warms colors by wave 20 — judged correct
+per the brief's "whether from difficulty selection OR endless-wave scaling"
+framing, not a bug to special-case away).
+
+**Wiring**: `override.color = warmHexColor(def.color, warmth)` is added to
+the same `override: Partial<EnemyDef>` object `spawnEnemyFromRequest`
+already builds and passes to `createEnemy()`. No changes were needed in
+`entities/factory.ts` (`createEnemy` already does `{ ...ENEMIES[archetype],
+...defOverride }` then `e.color = def.color`, so any override field —
+`hp`, `meleeDamage`, now `color` — flows through identically) or in either
+render path: both `render/renderer.ts` (`shapeColorWithFlash(e)` returns
+`e.color`, only substituting pure white during the existing hit-flash
+window) and `render/rendererDetailed.ts` (same pattern) already read the
+per-entity `e.color` rather than looking up `ENEMIES[archetype].color`
+directly — no render-path bypass to fix.
+
+### Verification for this pass
+
+- `npm run build` (tsc + vite build) passes clean.
+- Playwright smoke run against `npm run dev` (headless Chromium):
+  - Selected Hell, pressed F4 14 times (2 presses/wave through waves 1-5)
+    and confirmed live state: `phase: 'playing'`, `waveManager.waveIndex: 7`
+    (wave 8), `wavePhase: 'running'` — the run continued straight through
+    wave 5 into wave 8 with no victory screen at any point.
+  - F6-spawned a grunt at that point (Hell, wave 8): got back `hp: 105,
+    dmg: 25, color: '#ff0068'`. Checked against the formula by hand: `hp =
+    round(30 * 2.5 * 1.12^3) = round(30*2.5*1.405) = round(105.4) = 105`;
+    `dmg = round(8 * 2.2 * 1.405) = round(24.7) = 25` — both match exactly.
+  - `SpawnDirector.debugSnapshot()` at that point showed `currentRate:
+    0.885`, `effectiveAliveCap: 228` — both well above the wave-1-Normal
+    baseline (`baseRate 0.35`, `aliveCap 90`), confirming spawn-rate/cap
+    endless+difficulty composition is live, not just the per-enemy stats.
+  - Screenshotted the running game at that state: HUD reads "Wave 8
+    (Endless)", the "WAVE 5 COMPLETE — ENDLESS MODE" banner is visible, and
+    the F6-spawned grunt renders as a small hot-pink/red circle — visibly
+    warmer than base violet while staying recognizably grunt-shaped/sized
+    next to the (still dark-red, barely-shifted) boss-shaped core and the
+    unaffected blue spawner boxes.
+  - Separately confirmed a Normal-difficulty, wave-1 F6-spawned grunt is
+    exactly `color: '#8f00ff'` (the literal base `ENEMIES.grunt.color`,
+    zero drift) in **both** F10 render styles (flat and detailed
+    screenshots both show the same unmodified violet circle) — the `amount
+    === 0` no-op path round-trips exactly.
+  - Pushed to a much deeper run (20 F4 presses on Hell, landing at
+    `waveIndex: 10` / wave 11) and F6-spawned another grunt: `hp: 148`
+    (formula: `round(30*2.5*1.12^6) = round(30*2.5*1.9738) = round(148.04)
+    = 148`, matches) and a noticeably-more-saturated red (`color:
+    '#ff004a'`) than the wave-8 sample above — confirms warmth increases
+    monotonically with wave depth, not just a one-time step. Screenshotted
+    in both render styles (both show the same hue-shifted red circle).
+  - Forced player HP to 0 directly on that same deep-endless run and
+    confirmed `phase` transitions to `'gameover'` exactly as before, with
+    the game-over screen correctly reading "Wave reached: 11" (not capped
+    at 5, not crashing on an out-of-bounds `WAVES` index) — death is still
+    the real, working end condition in endless mode.
+  - No `pageerror`/`console.error` events across any of the above.
+- **Not verified in this environment / needs a human**: the actual "feel"
+  of the `growthRate = 1.12` pacing over a real, non-F4-skipped playthrough
+  (whether wave 8-12 in particular feels like a fair ramp rather than a
+  wall, since that's exactly where a single-player build's gear/shop levels
+  are still catching up); whether magenta-leaning mid-warmth colors (e.g.
+  the `#ff0068`/`#ff004a` samples above) read as clearly "enraged/warmer"
+  to a human eye rather than just "a different color," versus a design that
+  detoured through orange/yellow first — the brief's own hue-wheel
+  reasoning (shift toward 0°, short way around from ~270-280°) mandates the
+  magenta-then-red path taken here, but only a human looking at it can
+  confirm it reads as "warming" rather than "random-ish"; and whether
+  `budgetGrowthPerWavePastFive = 0.08`/`maxBudgetScale = 3.0` keeps wave
+  pacing feeling right at very deep endless waves (30+) rather than either
+  dragging on too long (too many enemies for the alive cap to admit
+  quickly) or feeling sparse (cap reached too fast, then idle).

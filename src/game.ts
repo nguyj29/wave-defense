@@ -6,12 +6,13 @@ import {
   DEBUG,
   DIFFICULTY,
   ENEMIES,
+  endlessFactor,
   GEM,
   getWaveForDifficulty,
   PLAYER,
   SHOP,
-  SPAWN_DIRECTOR,
   SUMMON,
+  WAVES,
   WEAPONS,
   WORLD,
   type DifficultyId,
@@ -72,6 +73,7 @@ import {
   drawWorldBounds,
 } from './render/renderer.ts';
 import { drawEntityDetailed, drawObstaclesDetailed, drawWallsDetailed } from './render/rendererDetailed.ts';
+import { warmHexColor } from './render/colorUtils.ts';
 import { playSfx } from './audio/sfx.ts';
 import { isMusicMuted, setMusicIntensity, toggleMusicMute } from './audio/music.ts';
 import { FlowField, type Pathfinder } from './world/flowfield.ts';
@@ -80,7 +82,10 @@ import { generateObstacles, type Obstacle } from './world/obstacles.ts';
 import { SpawnDirector, type SpawnKind } from './waves/spawnDirector.ts';
 import { WaveManager } from './waves/waveManager.ts';
 
-export type GamePhase = 'start' | 'playing' | 'shop' | 'gameover' | 'victory';
+// Round 8: 'victory' removed — there is no run-ending win state anymore
+// (endless mode continues past wave 5 forever); death is the only way a run
+// ends now.
+export type GamePhase = 'start' | 'playing' | 'shop' | 'gameover';
 
 interface DebugState {
   overlay: boolean;
@@ -134,7 +139,7 @@ export class Game {
   spawnDirector = new SpawnDirector(this.waveManager.currentWave);
 
   phase: GamePhase = 'start';
-  gameOverInfo: { waveReached: number; coins: number; victory: boolean } | null = null;
+  gameOverInfo: { waveReached: number; coins: number } | null = null;
   shopPanel = new ShopPanel();
   // Round 6: chosen on the start screen, persists across reset() (so a
   // restart-after-death shows the same selection rather than reverting to
@@ -159,6 +164,10 @@ export class Game {
   private lastRenderMs = 0;
   private deathHandled = new Set<number>();
   private lastMusicIntense = false;
+  // Round 8: transient "Wave 5 Complete — Endless Mode" banner, shown once
+  // when WaveManager.justEnteredEndless fires. Counts down to 0; the HUD
+  // only draws it while > 0.
+  endlessBannerTimer = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -219,12 +228,13 @@ export class Game {
     this.playerWeaponState = createPlayerWeaponState(this.shopLevels);
 
     this.waveManager = new WaveManager();
-    this.spawnDirector = new SpawnDirector(getWaveForDifficulty(this.waveManager.currentWave, this.difficulty), DIFFICULTY[this.difficulty].spawnRateMult);
+    this.spawnDirector = new SpawnDirector(getWaveForDifficulty(this.waveManager.currentWave, this.difficulty), this.effectiveSpawnRateMult());
     this.rateHistory = [];
 
     this.camera.snapTo(this.player.x, this.player.y);
     this.camera.zoom = 1.0;
     this.gameOverInfo = null;
+    this.endlessBannerTimer = 0;
     this.debug.godMode = false;
     setGodMode(false);
     this.phase = 'playing';
@@ -263,7 +273,7 @@ export class Game {
       }
     }
 
-    if ((this.phase === 'gameover' || this.phase === 'victory') && this.input.wasPressed('KeyR')) {
+    if (this.phase === 'gameover' && this.input.wasPressed('KeyR')) {
       // Round 6: return to the difficulty selector rather than immediately
       // replaying, so the player can change difficulty before their next
       // run (their previous choice is still preselected — see `difficulty`).
@@ -482,7 +492,7 @@ export class Game {
 
     // Player / core death checks.
     if (this.player.dead || this.core.dead) {
-      this.gameOverInfo = { waveReached: wm.waveIndex + 1, coins: this.coins, victory: false };
+      this.gameOverInfo = { waveReached: wm.waveIndex + 1, coins: this.coins };
       this.phase = 'gameover';
     }
 
@@ -518,13 +528,11 @@ export class Game {
     }
 
     const changed = wm.update(dt, aliveEnemies);
-    if (changed) {
-      if (wm.phase === 'running') this.onWaveTransition(wm.pendingEarlyCallBonus);
-      else if (wm.phase === 'allWavesComplete') {
-        this.gameOverInfo = { waveReached: wm.waveIndex + 1, coins: this.coins, victory: true };
-        this.phase = 'victory';
-      }
-    }
+    if (changed && wm.phase === 'running') this.onWaveTransition(wm.pendingEarlyCallBonus);
+
+    // Round 8: endless-mode banner countdown (see endlessBannerTimer/
+    // WaveManager.justEnteredEndless above).
+    if (this.endlessBannerTimer > 0) this.endlessBannerTimer -= dt;
 
     // Spawn-rate debug graph history.
     this.rateHistory.push(this.spawnDirector.currentRate);
@@ -535,8 +543,17 @@ export class Game {
   }
 
   private onWaveTransition(bonus: number): void {
-    this.spawnDirector = new SpawnDirector(getWaveForDifficulty(this.waveManager.currentWave, this.difficulty), DIFFICULTY[this.difficulty].spawnRateMult);
+    this.spawnDirector = new SpawnDirector(getWaveForDifficulty(this.waveManager.currentWave, this.difficulty), this.effectiveSpawnRateMult());
     this.currentWaveCoinBonus = bonus;
+    if (this.waveManager.justEnteredEndless) {
+      this.waveManager.justEnteredEndless = false;
+      this.endlessBannerTimer = 3.5;
+    }
+  }
+
+  /** Difficulty spawnRateMult composed with the endless-wave escalation factor (round 8) — see DECISIONS.md. */
+  private effectiveSpawnRateMult(): number {
+    return DIFFICULTY[this.difficulty].spawnRateMult * endlessFactor(this.waveManager.waveIndex + 1);
   }
 
   private trySummon(x: number, y: number): void {
@@ -566,15 +583,28 @@ export class Game {
     // Round 6: difficulty scales enemy HP/damage at spawn time via
     // createEnemy's defOverride — Normal's 1.0 multipliers reproduce the
     // unscaled base ENEMIES stats exactly.
+    // Round 8: composed multiplicatively with the endless-wave escalation
+    // factor (1.0 at/before wave 5) — see DECISIONS.md.
     const diff = DIFFICULTY[this.difficulty];
+    const waveNumber = this.waveManager.waveIndex + 1;
+    const endless = endlessFactor(waveNumber);
     const def = ENEMIES[kind];
     const override: Partial<EnemyDef> = {
-      hp: Math.round(def.hp * diff.enemyHpMult),
-      meleeDamage: Math.round(def.meleeDamage * diff.enemyDmgMult),
+      hp: Math.round(def.hp * diff.enemyHpMult * endless),
+      meleeDamage: Math.round(def.meleeDamage * diff.enemyDmgMult * endless),
     };
     if (def.ranged) {
-      override.ranged = { ...def.ranged, damage: Math.round(def.ranged.damage * diff.enemyDmgMult) };
+      override.ranged = { ...def.ranged, damage: Math.round(def.ranged.damage * diff.enemyDmgMult * endless) };
     }
+    // Round 8: hue-shift the archetype's base color warmer, proportional to a
+    // combined "power level" from BOTH difficulty and endless-wave scaling
+    // (enemyHpMult is the primary driver — see DECISIONS.md for the exact
+    // powerLevel->warmth curve and why hp is chosen over averaging every
+    // multiplier). Normal difficulty at/before wave 5 has powerLevel === 1,
+    // so warmth === 0 and the color is untouched.
+    const powerLevel = diff.enemyHpMult * endless;
+    const warmth = Math.max(0, 1 - 1 / powerLevel);
+    override.color = warmHexColor(def.color, warmth);
     this.entities.push(createEnemy(kind, x, y, override));
   }
 
@@ -601,13 +631,7 @@ export class Game {
       // own (it's gated on aliveEnemies === 0 now) — use the dedicated debug
       // bypass so this dev shortcut still unconditionally skips the wave.
       const changed = this.waveManager.debugForceAdvance();
-      if (changed) {
-        if (this.waveManager.phase === 'running') this.onWaveTransition(this.waveManager.pendingEarlyCallBonus);
-        else if (this.waveManager.phase === 'allWavesComplete') {
-          this.gameOverInfo = { waveReached: this.waveManager.waveIndex + 1, coins: this.coins, victory: true };
-          this.phase = 'victory';
-        }
-      }
+      if (changed && this.waveManager.phase === 'running') this.onWaveTransition(this.waveManager.pendingEarlyCallBonus);
     }
     if (input.wasPressed('F6')) {
       const kind = DEBUG.spawnCycleTypes[this.debug.spawnCycleIndex];
@@ -722,7 +746,7 @@ export class Game {
       summonAliveCount: this.entities.filter((e) => e.kind === 'ally' && e.summonedByPlayer && !e.dead).length,
       coins: this.coins,
       waveNumber: this.waveManager.waveIndex + 1,
-      totalWaves: 5,
+      isEndless: this.waveManager.waveIndex + 1 > WAVES.length,
       enemiesAlive: this.entities.filter((e) => e.kind === 'enemy' && !e.dead).length,
       wavePhase: this.waveManager.phase,
       timeRemaining: this.waveManager.timeRemaining,
@@ -780,13 +804,17 @@ export class Game {
         budgetSpent: snap.budgetSpent,
         budgetTotal: snap.budgetTotal,
         aliveCount: this.entities.filter((e) => e.kind === 'enemy' && !e.dead).length,
-        aliveCap: SPAWN_DIRECTOR.aliveCap,
+        // Round 8: was the raw SPAWN_DIRECTOR.aliveCap constant, which drifted
+        // from reality once spawnRateMult composes difficulty * endlessFactor
+        // — read the director's own scaled cap instead (see effectiveAliveCap).
+        aliveCap: snap.effectiveAliveCap,
         waveTimeRemaining: this.waveManager.phase === 'running' ? this.waveManager.timeRemaining : 0,
         history: this.rateHistory,
         activeSpawnPointId: snap.activeSpawnPointId,
         clumpProgress: snap.clumpProgress,
         clumpTarget: snap.clumpTarget,
         pauseTimer: snap.pauseTimer,
+        endlessFactor: endlessFactor(this.waveManager.waveIndex + 1),
       };
       drawSpawnReadout(ctx, w, readout);
     }
@@ -796,15 +824,35 @@ export class Game {
       this.shopPanel.draw(ctx, w, h, this.coins, this.shopLevels);
     }
 
-    if (this.phase === 'gameover' || this.phase === 'victory') {
+    if (this.phase === 'gameover') {
       this.drawGameOverScreen();
     }
+
+    if (this.endlessBannerTimer > 0) this.drawEndlessBanner();
 
     if (this.phase === 'start') {
       drawStartScreen(ctx, w, h, this.difficulty);
     }
 
     this.lastRenderMs = performance.now() - t0;
+  }
+
+  /** Round 8: transient one-time "Wave 5 Complete — Endless Mode" celebratory banner, see endlessBannerTimer. */
+  private drawEndlessBanner(): void {
+    const ctx = this.ctx;
+    const w = this.camera.screenWidth;
+    // Fade the last ~0.8s of its ~3.5s life.
+    const alpha = Math.min(1, this.endlessBannerTimer / 0.8);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 44px sans-serif';
+    ctx.fillStyle = '#ffd766';
+    ctx.fillText('WAVE 5 COMPLETE', w / 2, 170);
+    ctx.font = 'bold 30px sans-serif';
+    ctx.fillStyle = '#ffe9b0';
+    ctx.fillText('— ENDLESS MODE —', w / 2, 210);
+    ctx.restore();
   }
 
   private drawGameOverScreen(): void {
@@ -817,7 +865,7 @@ export class Game {
     ctx.textAlign = 'center';
     ctx.font = 'bold 80px sans-serif';
     const info = this.gameOverInfo;
-    ctx.fillText(info?.victory ? 'PROTOTYPE COMPLETE' : 'GAME OVER', w / 2, h / 2 - 100);
+    ctx.fillText('GAME OVER', w / 2, h / 2 - 100);
     ctx.font = '36px sans-serif';
     ctx.fillText(`Wave reached: ${info?.waveReached ?? 1}`, w / 2, h / 2 - 10);
     ctx.fillText(`Coins collected: ${info?.coins ?? 0}`, w / 2, h / 2 + 42);
