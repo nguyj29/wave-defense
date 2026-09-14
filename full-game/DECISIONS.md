@@ -707,3 +707,39 @@ shares, boss ability numbers, scoring component weights/grade cutoffs,
 class stat multipliers, risk-modifier strength) has had real playtesting
 behind it; it's all internally-consistent and verified-correct
 mechanically, but rebalancing against actual play should be expected.
+
+## Post-launch fixes (playtest feedback)
+
+**Doors blocked the player too.** The Phase 5 door-collision code
+(`entities/movement.ts`) resolved every mover — including the player —
+against a live door's rect, contradicting the original brief's "the player
+passes through their own doors freely." Enemies/allies still get blocked
+normally; the player is now explicitly exempted (`if (e.kind === 'player')
+continue;` before the door-resolution loop). Player bullets still damage
+doors exactly as before, so shooting through your own door to protect the
+base is still a meaningful choice even though walking through no longer
+requires destroying it first.
+
+**HUD/banner showed "wave X/5" and "WAVE 5 COMPLETE" even though the real
+wave table has 25 entries.** Both were copy-paste leftovers from the
+prototype (round 8's endless-mode text), never updated when Phase 3 built
+the actual 25-wave `buildWaveTable()`. Mechanically the game was always
+progressing through all 25 real, unique waves correctly — `getWaveDef()`,
+`getWaveForDifficulty()`, and the boss table all correctly indexed the full
+table — this was a **display-only** bug, but a bad one: it made the
+25-wave game look capped at 5. Fixed by adding `HudData.totalWaves` (set
+from `WAVES.length`) and using it in both the in-HUD wave counter and the
+endless-mode celebratory banner instead of the hardcoded literal.
+
+**Flagging, not fixing (a design question, not a bug)**: the brief says
+"Clearing wave 25 is the win state," but the actual `GamePhase` type
+dropped `'victory'` entirely in Phase 3/round-8-carryover and the game
+rolls straight into endless mode after wave 25 clears — there is currently
+no win/completion screen at wave 25, only the "WAVE 25 COMPLETE — ENDLESS
+MODE" banner (now correctly wave-25-labeled per the fix above) and
+continued play. This mirrors the prototype's own round-8 "make it endless"
+change, but the full-game brief explicitly wanted a win state at 25 rather
+than endless-forever. Left alone pending a decision on whether the
+scoring/grading system's run-end screen (which already exists and covers a
+completed run's grade) should double as the "win" moment, or whether a
+distinct victory screen is wanted in addition.

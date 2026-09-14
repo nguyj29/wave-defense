@@ -116,8 +116,15 @@ export function integrateAndResolve(
   // Phase 5: doors block movement exactly like a wall segment while alive
   // (see game.ts::updateDoors for how they take damage and eventually stop
   // being alive) — one gap, one door, same rect the wall's own gap leaves
-  // open (world/map.ts::DOOR_RECTS).
+  // open (world/map.ts::DOOR_RECTS). Per the original brief ("the player
+  // passes through their own doors freely"), the player is exempt — doors
+  // still block enemies and allies, but the player walks straight through
+  // a live door rather than needing to destroy it first. Player bullets
+  // still damage the door normally (see game.ts's separate projectile-vs-
+  // door pass), so shooting through your own door to protect the base is
+  // still meaningful even though you can walk past it either way.
   for (const e of movers) {
+    if (e.kind === 'player') continue;
     for (const d of doors) {
       if (d.alive) resolveCircleVsRect(e, d.x, d.y, d.w, d.h);
     }

@@ -1259,6 +1259,7 @@ export class Game {
       summonAliveCount: this.entities.filter((e) => e.kind === 'ally' && e.summonedByPlayer && !e.dead).length,
       coins: this.coins,
       waveNumber: this.waveManager.waveIndex + 1,
+      totalWaves: WAVES.length,
       isEndless: this.waveManager.waveIndex + 1 > WAVES.length,
       enemiesAlive: this.entities.filter((e) => e.kind === 'enemy' && !e.dead).length,
       wavePhase: this.waveManager.phase,
@@ -1362,7 +1363,7 @@ export class Game {
     ctx.textAlign = 'center';
     ctx.font = 'bold 44px sans-serif';
     ctx.fillStyle = '#ffd766';
-    ctx.fillText('WAVE 5 COMPLETE', w / 2, 170);
+    ctx.fillText(`WAVE ${WAVES.length} COMPLETE`, w / 2, 170);
     ctx.font = 'bold 30px sans-serif';
     ctx.fillStyle = '#ffe9b0';
     ctx.fillText('— ENDLESS MODE —', w / 2, 210);
