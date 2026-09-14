@@ -67,6 +67,13 @@ export const WALL_SEGMENTS: Rect[] = [
   { x: wallRightX - BASE.wallThickness / 2, y: wallY, w: BASE.wallThickness, h: WORLD.height - wallY },
 ];
 
+// Round 9: offsets deliberately left unchanged — same absolute-vs-
+// proportional call as CORE's edge margin (config.ts) and BASE.wallThickness/
+// gapWidth (also never scaled by round 5's 1.5x world-size increase either):
+// a fixed distance from the core, not a fraction of the world. Still
+// comfortably inside the (now-smaller) wall pen after the halving
+// (wallSetback shrank to 195, so a 140-unit y-offset still sits well north
+// of the core and south of the wall).
 export const SPAWNER_POSITIONS: { x: number; y: number }[] = [
   { x: CORE.x - 220, y: CORE.y - 140 },
   { x: CORE.x + 220, y: CORE.y - 140 },
@@ -117,8 +124,11 @@ export const BASE_CLEAR_RECT: Rect = {
   h: WORLD.height - (wallY - 40),
 };
 
-// Scaled 1.5x alongside the world-size increase from the original 160.
-export const SPAWN_POINT_CLEAR_RADIUS = 240;
+// Scaled 0.5x alongside round 9's world-size halving (was scaled 1.5x the
+// other way, 160->240, in round 5 when the world grew 3200->4800) — this is
+// a proportional "how much clear space around a spawn point" radius, not an
+// absolute gameplay constant, so it tracks the world-size scale factor.
+export const SPAWN_POINT_CLEAR_RADIUS = 120;
 
 // -----------------------------------------------------------------------
 // Round 7: a uniform, map-wide grid of roads replaces the old maze-style
@@ -137,7 +147,7 @@ function gridLines(): number[] {
   return lines;
 }
 
-// Same line set serves both axes since the world is square (4800x4800).
+// Same line set serves both axes since the world is square (2400x2400).
 export const ROAD_LINES: { vertical: number[]; horizontal: number[] } = {
   vertical: gridLines(),
   horizontal: gridLines(),

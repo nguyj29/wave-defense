@@ -5,51 +5,76 @@
 // ============================================================================
 
 export const WORLD = {
-  // Bumped from 3200x3200 for the eventual 25-wave game (see DECISIONS.md
-  // round 5 for the sizing/perf tradeoff) — a clear ~2.25x area increase.
-  width: 4800,
-  height: 4800,
+  // Round 9 (post-launch, see DECISIONS.md): halved from 4800x4800 — the map
+  // was reported too big. A clean 0.5x linear scale (0.25x area), so every
+  // *proportional* geometry constant below is just the old value / 2, same
+  // methodology as round 5's 1.5x bump the other direction.
+  width: 2400,
+  height: 2400,
   seed: 1337, // seeded RNG so obstacle layout is reproducible while tuning
-  // Bumped from 32 alongside the world-size increase so the Dijkstra
-  // flow-field recompute's cell count (and thus its one-time cost at level
-  // load) doesn't grow by the full area ratio — see DECISIONS.md for
-  // measured recompute times before/after.
-  cellSize: 40,
+  // Round 9: shrunk from 40 to 16 — the map is 4x smaller in area now, so a
+  // measured Node-harness recompute (same methodology as round 5's
+  // before/after table, run against the real FlowField class and the real
+  // round-9 obstacle count) showed every candidate down to 8 comfortably
+  // one-time-cost territory (worst observed: ~60ms at cellSize 8, ~13-60ms
+  // at 16) — nothing here forced a particular choice on perf grounds alone,
+  // unlike round 5's original bump. 16 was picked as a genuinely finer grid
+  // than the old 40 (more than round 5's own cellSize/worldSize ratio would
+  // give, which'd be 20) without going so fine it stops being a "one-time
+  // load cost" by feel. See DECISIONS.md for the full measured table AND a
+  // real bug this measurement uncovered (world/flowfield.ts's `dist` array
+  // — fixed here, not merely worked around by a larger cellSize).
+  cellSize: 16,
 };
 
 export const OBSTACLES = {
-  // Round 7: recalculated for the grid-of-roads map (see DECISIONS.md). The
-  // road grid (ROAD_GRID) removes noticeably less open area than the old
-  // maze lane system did (a thin lattice of 160-wide strips vs. several
-  // wide 180-wide corridors sprawling diagonally-ish across the map), so
-  // there's more usable block-interior area than before — counts bumped up
-  // from 104/36 accordingly so the green blocks still read as "scattered
-  // forest" rather than emptier than the old map.
-  treeCount: 150,
+  // Round 9 (post-launch map-halving, see DECISIONS.md): recalculated by
+  // Monte Carlo measuring the actual fraction of the map that
+  // world/obstacles.ts::validPlacement() accepts, before vs. after halving —
+  // NOT a plain area ratio, because the road grid and base-wall pen keep
+  // their *absolute* thickness/gap-width (a chokepoint is a chokepoint
+  // regardless of map size — see BASE/ROAD_GRID below) while the map itself
+  // shrinks around them, so those fixed-width features eat a much bigger
+  // relative share of the smaller map. Measured placeable-area ratio (new
+  // config / old config) ≈ 0.156, applied to both counts so the *placed*
+  // obstacle density per unit of actually-usable ground stays the same as
+  // before the resize rather than the map reading emptier OR absurdly denser
+  // for its size. treeCount 150->23, rockCountMin 54->8 (round(150*0.156),
+  // round(54*0.156)).
+  treeCount: 23,
   treeRadius: 18,
-  rockCountMin: 54, // still enough cover in the blocks for archer-kiting
+  rockCountMin: 8, // still enough cover in the blocks for archer-kiting
   rockRadius: [24, 40] as [number, number],
   rockVertsRange: [6, 9] as [number, number],
-  // Forest is placed in patches sized to fit comfortably inside one grid
-  // block's interior (block interior is roughly
-  // ROAD_GRID.spacing - ROAD_GRID.width = 640 units across) rather than the
-  // old wide multi-block patches, so a patch doesn't spill across a road
-  // into the next block (obstacles landing on the road are simply rejected
-  // by validPlacement, but an oversized patch would waste a lot of
-  // placement attempts on rejected candidates). patchCount raised so patches
-  // are spread across more of the 36 blocks.
-  patchCount: 26,
-  patchRadius: 260,
-  // Fraction of obstacles placed via pure uniform scatter (not clumped into
-  // a patch) — raised slightly from 0.15 since the grid's many separate
-  // block interiors already provide natural visual separation, so a bit
-  // more scatter still reads as "forest," not polka-dotted.
+  // Round 9: patchCount scaled by the same 0.156 placeable-area ratio as the
+  // obstacle counts (26 -> 4) — with only ~31 total obstacles now, 26
+  // separate clumps would mean under 2 obstacles per patch on average,
+  // barely reading as "clumps" at all; 4 patches absorbing ~80% of a much
+  // smaller obstacle pool (scatterFraction unchanged) still gives a few
+  // real, visible clumps rather than a diffuse sprinkle across all 36 (now
+  // much smaller) blocks. patchRadius shrunk 260 -> 100, sized the same way
+  // round 7 sized it originally: comfortably inside one grid block's
+  // interior, which is now ROAD_GRID.spacing - ROAD_GRID.width = 400 - 160 =
+  // 240 units across (vs. the old 640) since ROAD_GRID.width is a fixed
+  // absolute "road footprint" that did NOT shrink with the map (see
+  // ROAD_GRID below) — the interior shrank by more than the map's own 0.5x
+  // linear factor as a direct consequence.
+  patchCount: 4,
+  patchRadius: 100,
+  // Unchanged — a fraction, not a size/count, and not dependent on map
+  // scale; kept at round 7's value since nothing about *why* 0.2 was chosen
+  // (natural block-to-block visual separation vs. polka-dot scatter)
+  // depends on how big the map is.
   scatterFraction: 0.2,
 };
 
 export const CORE = {
-  // Bottom-middle of the 3200x3200 world (see DECISIONS.md for the map
-  // redesign rationale) — same edge margin (220) the corner base used.
+  // Bottom-middle of the world (see DECISIONS.md for the map redesign
+  // rationale) — same edge margin (220) the corner base used, and NOT scaled
+  // by round 9's map-halving: this is the same absolute-vs-proportional call
+  // round 5 already made when the world went 3200->4800 (edge margin stayed
+  // 220 then too) — it's a fixed "how far the core sits from the wall/edge"
+  // gameplay distance, not a fraction of the world's overall size.
   x: WORLD.width / 2,
   y: WORLD.height - 220,
   radius: 60,
@@ -63,17 +88,30 @@ export const BASE = {
   // core (three gaps, one per active spawn lane) plus two side walls running
   // south from its ends down to the world edge, closing off flanking. See
   // world/map.ts for the derived geometry and DECISIONS.md for why.
+  //
+  // Round 9 (post-launch map-halving): wallThickness and gapWidth are
+  // DELIBERATELY left unchanged below — they're absolute, gameplay-tuned
+  // choke-point dimensions ("how wide is the doorway the horde funnels
+  // through"), not a fraction of the world's size. A 120-unit gap is still a
+  // reasonable choke width regardless of whether the map around it is
+  // 4800 or 2400 units across; halving it purely because the map halved
+  // would have made the chokepoint narrower for no gameplay reason. Every
+  // *position* below (wallSetback/wallHalfSpan/gapOffsets), by contrast, IS
+  // proportional to world size (how far the wall sits from the core, how
+  // wide a span it covers) and is halved exactly like round 5 halved-the-
+  // other-way (1.5x) when the world went 3200->4800.
   wallThickness: 24,
   gapWidth: 120,
   // The north wall sits this far "in front of" (north of) the core. Scaled
-  // 1.5x alongside the world-size increase (see DECISIONS.md round 5).
-  wallSetback: 390,
+  // 0.5x alongside round 9's world-size halving (was 1.5x'd the other way in
+  // round 5 — see DECISIONS.md for both).
+  wallSetback: 195,
   // The north wall spans CORE.x -/+ wallHalfSpan; side walls drop straight
-  // down from its two ends to the world's south edge. Scaled 1.5x.
-  wallHalfSpan: 1125,
+  // down from its two ends to the world's south edge. Scaled 0.5x.
+  wallHalfSpan: 562.5,
   // Gap centers, as offsets from CORE.x — one per active spawn point
-  // (top-left / top-middle / top-right), in that order. Scaled 1.5x.
-  gapOffsets: [-600, 0, 600] as number[],
+  // (top-left / top-middle / top-right), in that order. Scaled 0.5x.
+  gapOffsets: [-300, 0, 300] as number[],
   spawnerRadius: 24,
   spawnerCount: 2,
   spawnerOutputBase: 0.1, // spawns/s == 1 per 10s
@@ -95,15 +133,26 @@ export const SHOP = {
 // city blocks, with forest filling each block's interior. See world/map.ts
 // (ROAD_LINES) and DECISIONS.md round 7 for the spacing/width rationale.
 //
-// spacing=800 on the 4800x4800 world places grid lines at 800/1600/2400/
-// 3200/4000 in both axes — 5 lines each way, 36 blocks total — and, not by
-// coincidence, 2400 is both a grid line AND CORE.x (WORLD.width/2), so the
-// base's spawn lane naturally lines up with the road grid with no special-
-// casing. width=160 (kept close to the old LANES.width=180 "concrete strip"
-// footprint, trimmed slightly since there are now many more road strips
-// crossing the whole map rather than a few point-to-point corridors).
+// Round 9 (post-launch map-halving): `spacing` is scaled 0.5x (800 -> 400)
+// alongside the world halving, specifically to PRESERVE the same 5-lines-
+// per-axis/36-blocks-total grid shape round 7 designed — spacing=400 on the
+// 2400x2400 world places grid lines at 400/800/1200/1600/2000, and 1200 is
+// still both a grid line AND CORE.x (WORLD.width/2), so the base's spawn
+// lane still lines up with the grid automatically, exactly as before. A
+// smaller number of blocks (e.g. leaving spacing at 800, which would only
+// fit 2 lines/4 blocks on a 2400 map) would have made the map read as one
+// giant block instead of a city grid — scaling spacing down avoids that.
+//
+// `width` is DELIBERATELY left unchanged (160): like BASE.wallThickness/
+// gapWidth above, a road's physical width is an absolute, gameplay-tuned
+// footprint ("how wide is the strip you walk down"), not a fraction of the
+// world's size — halving it just because the map halved would make every
+// road an oddly thin sliver for no gameplay reason. This does mean each
+// block's *interior* (spacing - width) shrinks by more than the map's own
+// 0.5x linear factor (640 -> 240, not 320) — accounted for explicitly in
+// OBSTACLES.patchRadius above.
 export const ROAD_GRID = {
-  spacing: 800,
+  spacing: 400,
   width: 160,
 };
 
@@ -1128,9 +1177,10 @@ export const COINS = {
   // from anywhere on the map (see game.ts's coin loop) — at the old speed, a
   // coin dropped far away (e.g. an ally kill on the far side of the map)
   // would take many seconds to visibly arrive, reading as sluggish rather
-  // than "snappy magnet." 650 covers the map's ~4800-unit span in a much
-  // more satisfying ~7s worst case while still leaving pickup feeling like a
-  // deliberate glide-in rather than an instant teleport.
+  // than "snappy magnet." 650 comfortably covers the map's worst-case span
+  // (originally ~4800 units; round 9 halved the map to ~2400, so this is now
+  // an even faster ~3.7s worst case) — left unchanged since a faster-than-
+  // strictly-needed magnet speed isn't a problem, only a slower one is.
   magnetSpeed: 650,
 };
 

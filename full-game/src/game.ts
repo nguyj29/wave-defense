@@ -504,7 +504,17 @@ export class Game {
     // --- Player control -------------------------------------------------
     const classDef = PLAYER_CLASSES[this.playerClass];
     const playerSpeed = PLAYER.speed * classDef.speedMult;
-    const axis = input.moveAxis();
+    // Post-launch fix: while the tuning panel is open it captures Left/Right
+    // (and Up/Down never did anything for it, but WASD/arrows both driving
+    // the player at the same time as panel-row adjustment was the reported
+    // bug) — zero the movement axis entirely rather than only excluding
+    // arrow keys, matching the brief's "the player probably shouldn't be
+    // moving at all while a dev panel is open and capturing input" and the
+    // shop panel's existing pattern of fully owning input while its own
+    // panel is up. World simulation (enemies, spawns) deliberately keeps
+    // running underneath so tuning edits are still visible live — see
+    // DECISIONS.md.
+    const axis = this.tuningPanelOpen ? { x: 0, y: 0 } : input.moveAxis();
     const targetVx = axis.x * playerSpeed;
     const targetVy = axis.y * playerSpeed;
     const accel = playerSpeed / PLAYER.accelTime;
@@ -802,7 +812,17 @@ export class Game {
       }
     }
 
-    if (input.wasPressed('Space') && wm.phase === 'intermission') {
+    // Post-launch fix: Space is also how the tuning panel's "Reset <Difficulty>
+    // to Defaults" row triggers when it's the selected row (handleTuningKeys(),
+    // which runs before simulate() every tick) — without this guard, a Space
+    // press during an intermission with the panel open and its Reset row
+    // selected fired BOTH actions from one keypress (wasPressed() is a
+    // same-tick edge flag any number of readers can observe, not a
+    // consume-once event). Scoping this read to "panel closed" — rather than
+    // rebinding the panel's Reset to a different key — keeps a single key
+    // doing a single thing per tick based on which one is actually capturing
+    // input, matching the movement fix above. See DECISIONS.md.
+    if (!this.tuningPanelOpen && input.wasPressed('Space') && wm.phase === 'intermission') {
       const bonus = wm.skipIntermission();
       this.onWaveTransition(bonus);
     }

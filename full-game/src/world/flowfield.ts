@@ -91,7 +91,30 @@ export class FlowField implements Pathfinder {
   private cols: number;
   private rows: number;
   private blocked!: Uint8Array;
-  private dist!: Float32Array;
+  // Round 9 bugfix (see DECISIONS.md): this was Float32Array. `dist` is both
+  // written AND read back mid-algorithm (`top.dist > this.dist[top.index]`
+  // and `nd < dist[nIdx]` in recompute() below) — every read of a Float32
+  // element widens it back to a JS double with a small rounding error
+  // relative to the full-precision `nd`/`top.dist` doubles it's compared
+  // against. On a small/coarse grid the accumulated rounding never exceeds
+  // the real cost differences between candidate paths (1 vs Math.SQRT2 per
+  // step), so it was invisible through every prior round's cellSize choices
+  // (max ~120 cols). Past roughly 125-130 cols, though, it turns into a
+  // genuine correctness bug: rounding noise starts occasionally making a
+  // strictly-worse path compare as "shorter," which reopens already-settled
+  // cells and cascades — confirmed via a standalone harness (grid-only, no
+  // obstacles) that pushes/pops explode from ~15-25k at 100-120 cols to
+  // 20M+ (truncated) and climbing at 140+ cols, taking 7+ seconds and still
+  // not converging, vs. ~10-30ms at every grid size once `dist` is a plain
+  // Float64Array. This was latent in the shipped game already (nothing
+  // about round 9's map-halving caused it) but directly blocks safely
+  // choosing a smaller WORLD.cellSize for the smaller map, which is exactly
+  // what this round needed to do — so it's fixed here rather than left as a
+  // silent trap for the next cellSize change. `dirX`/`dirY` don't have this
+  // problem (each cell's value is written once, from a fully-computed
+  // gradient, and never read back into a comparison during the algorithm),
+  // so they're left as Float32Array.
+  private dist!: Float64Array;
   private dirX!: Float32Array;
   private dirY!: Float32Array;
 
@@ -122,7 +145,7 @@ export class FlowField implements Pathfinder {
   recompute(obstacles: Obstacle[]): void {
     const n = this.cols * this.rows;
     this.blocked = new Uint8Array(n);
-    this.dist = new Float32Array(n).fill(Infinity);
+    this.dist = new Float64Array(n).fill(Infinity);
     this.dirX = new Float32Array(n);
     this.dirY = new Float32Array(n);
 

@@ -1018,6 +1018,225 @@ actual project source (not reimplemented/mocked logic):
   wiring them through an actual canvas-backed `Game` object was not, since
   that requires the same browser environment Playwright couldn't reach).
 
+## Post-launch: map halved (4800 -> 2400) + two tuning-panel input conflicts
+
+### Map halving
+
+Player feedback: the map was too big. `WORLD.width/height`: **4800 -> 2400**
+(a clean 0.5x linear scale, 0.25x area) — same methodology round 5 used
+going the other way (3200 -> 4800, 1.5x). Every derived/proportional
+constant below is halved the same way; every genuinely-absolute constant is
+left untouched, per an explicit judgment call made per-constant (documented
+inline in `config.ts`/`world/map.ts` at each site, summarized here):
+
+**Scaled 0.5x (proportional to world size):**
+| Constant | Old | New |
+|---|---|---|
+| `WORLD.width`/`height` | 4800 | 2400 |
+| `BASE.wallSetback` | 390 | 195 |
+| `BASE.wallHalfSpan` | 1125 | 562.5 |
+| `BASE.gapOffsets` | [-600, 0, 600] | [-300, 0, 300] |
+| `ROAD_GRID.spacing` | 800 | 400 |
+| `world/map.ts::SPAWN_POINT_CLEAR_RADIUS` | 240 | 120 |
+
+`ROAD_GRID.spacing` halving is what preserves the road grid's shape at the
+new size: 5 lines/36 blocks total, exactly as round 7 designed, just on a
+smaller map — 1200 (`CORE.x`) is still both a grid line and the base's
+spawn lane, same as 2400 was on the old map. `SPAWN_POINTS` (top-left/
+top-middle/top-right at the first/CORE.x/last grid line) needed no direct
+edit — they're computed from `ROAD_GRID`/`CORE`, so halving those two
+automatically halves the spawn point positions too, and re-verified live
+(see Verification below) that they still land where expected.
+
+**Left unchanged (absolute, gameplay-tuned — not a fraction of world size):**
+| Constant | Value | Why |
+|---|---|---|
+| `BASE.wallThickness` | 24 | a wall's physical thickness doesn't depend on map size |
+| `BASE.gapWidth` | 120 | the choke-point width IS the gameplay tuning — a 120-unit gap is still a reasonable funnel regardless of the map around it; halving it for no reason would just make the chokepoint (and the resulting crowd-crush dynamics) narrower |
+| `ROAD_GRID.width` | 160 | same call as gapWidth — a road's walkable width is a fixed footprint, not a map-size fraction |
+| `CORE.y` edge margin | 220 | same call round 5 already made the other way (also left at 220 when the world grew 3200->4800) — a fixed "how far the core sits from the world edge" gameplay distance |
+| `world/map.ts::SPAWNER_POSITIONS` offsets | (±220, -140) | same call as CORE's edge margin; also never scaled by round 5's 1.5x either. Re-verified it still fits inside the now-smaller wall pen (140 < the new wallSetback of 195) |
+| `COINS.magnetSpeed` | 650 | the doc comment's "~4800-unit span" example is now stale (updated in-place) but the speed itself was already comfortably fast for the old, bigger map, so it's even more so now — nothing to fix |
+
+**Obstacles** (`world/obstacles.ts` / `OBSTACLES` in `config.ts`) — NOT a
+plain area-ratio scale. Because `BASE`/`ROAD_GRID`'s absolute dimensions
+(wallThickness, gapWidth, road width) didn't shrink with the map, they now
+occupy a much bigger *relative* share of the smaller map than before, so a
+naive 0.25x area-ratio would have under-thinned the counts. Instead,
+measured directly: a 2,000,000-sample Monte Carlo over
+`obstacles.ts::validPlacement()` (the actual placement-rejection logic —
+base-clear-zone, spawn-point-clear-zone, road-grid exclusion), run once
+against the OLD geometry and once against the NEW, gives the real
+*placeable* area, not just the world's raw area:
+
+| Config | Valid-placement fraction | Placeable area |
+|---|---|---|
+| Old (4800, old BASE/ROAD_GRID) | 0.617 | ~14,225,000 |
+| New (2400, new BASE/ROAD_GRID) | 0.384 | ~2,214,000 |
+| **Ratio (new/old)** | | **≈ 0.156** |
+
+Applied to both obstacle counts and patch count so density-per-usable-area
+stays constant rather than the map reading emptier or (if left at the old
+counts) absurdly dense for its size:
+
+| Constant | Old | New | Formula |
+|---|---|---|---|
+| `OBSTACLES.treeCount` | 150 | 23 | round(150 × 0.156) |
+| `OBSTACLES.rockCountMin` | 54 | 8 | round(54 × 0.156) |
+| `OBSTACLES.patchCount` | 26 | 4 | round(26 × 0.156) |
+| `OBSTACLES.patchRadius` | 260 | 100 | resized to fit inside one grid block's interior (`ROAD_GRID.spacing - ROAD_GRID.width`), which is now 240 units across (400-160) instead of 640 (800-160) — shrank by MORE than the map's own 0.5x because `ROAD_GRID.width` didn't shrink at all, a direct consequence of the absolute-vs-proportional call above |
+| `OBSTACLES.scatterFraction` | 0.2 | 0.2 (unchanged) | a fraction, not a size — nothing about why 0.2 was picked depends on map scale |
+| `treeRadius`/`rockRadius`/`rockVertsRange` | unchanged | unchanged | per-object physical footprint, independent of world scale (same call round 5 made) |
+
+`patchCount` dropping to 4 (rather than scaling with block count, which
+stayed at 36) is a deliberate judgment call: with only ~31 total obstacles
+now, 26 separate patches would average under 2 obstacles each — barely a
+"clump." 4 patches absorbing most of a much smaller pool still reads as a
+few real, visible clumps instead of a diffuse sprinkle.
+
+### `WORLD.cellSize`: 40 -> 16, plus a real bug found while measuring it
+
+Per the brief's ask to actually measure rather than leave it compensating
+for a map twice the size: benchmarked `world/flowfield.ts::FlowField`'s
+real `recompute()` (not a reimplementation) in a Node/tsx harness against
+the real round-9 obstacle set (31 obstacles), same methodology as round 5's
+own before/after table:
+
+| cellSize | Grid (cols×rows) | Cells | Recompute (3 runs) |
+|---|---|---|---|
+| 40 (old value) | 60×60 | 3,600 | 26.9 / 6.4 / 12.3 ms |
+| 32 | 75×75 | 5,625 | 16.1 / 4.6 / 5.3 ms |
+| 24 | 100×100 | 10,000 | 21.4 / 7.0 / 6.3 ms |
+| 20 (round 5's own cellSize/worldSize ratio, 1/120) | 120×120 | 14,400 | 9.2 / 8.6 / 9.1 ms |
+| **16 (chosen)** | 150×150 | 22,500 | 14.3 / 14.2 / 14.9 ms |
+| 12 | 200×200 | 40,000 | 27.9 / 36.4 / 23.7 ms |
+| 8 | 300×300 | 90,000 | 59.4 / 57.9 / 54.4 ms |
+
+Every candidate down to 8 is comfortably one-time-cost territory, so
+nothing forced a specific choice on perf grounds alone (unlike round 5,
+where 40 vs 32 genuinely mattered for the bigger map). **16** was picked as
+a real finer-grained flow field than the old 40 — finer than round 5's own
+cellSize/worldSize ratio (1/120, which would give 20) would suggest, since
+the smaller map has plenty of recompute headroom to spend on granularity —
+without going so fine it stops feeling like a one-time load cost by feel
+(8-12 still would have been fine perf-wise, but 16 already gives a visibly
+finer field than 40 did and there's no real gameplay reason to go further).
+
+**A real, previously-undetected bug surfaced by this measurement**:
+initial sweeps at cellSize 16-20 (and, on closer investigation, even the
+*shipped* 4800-world config at cellSize 32, i.e. a 150×150 grid) hung —
+pushes/pops in `FlowField.recompute()`'s Dijkstra exploded from the normal
+~15-25k at 100-120 cols to 20,000,000+ (truncated, still climbing) past
+~130 cols, turning a <100ms recompute into a 7+ second (and not actually
+converging) one. Root cause: `FlowField.dist` was a `Float32Array`, but
+it's both written AND read back mid-algorithm
+(`top.dist > this.dist[top.index]`, `nd < dist[nIdx]`) against full-
+precision JS-double values — every Float32 read introduces a small
+rounding error relative to the double it's compared against. On small/
+coarse grids that rounding never exceeds the real per-step cost difference
+(1 vs `Math.SQRT2`), so it was invisible through every prior round's
+cellSize choices (all ≤120 cols: round 5's own measured table happened to
+stop at exactly 150 cols on paper without ever running that config through
+the ACTUAL shipped `FlowField` class — its harness apparently didn't
+reproduce the Float32 array type precisely, since the real class at that
+grid size does hang). Past ~130 cols the rounding starts occasionally
+making a strictly-worse path compare as "shorter," reopening settled cells
+and cascading. **Fixed** here: `dist` is now `Float64Array` (confirmed via
+the same isolated Dijkstra-only harness that every grid size from 100 to
+160+ drops back to 10-30ms once `dist` is full-precision — see
+`world/flowfield.ts` for the fix and full writeup). `dirX`/`dirY` don't
+share the bug (each cell is written once from a fully-computed gradient and
+never read back into a comparison mid-algorithm) and were left as
+`Float32Array`. This was a latent bug in the already-shipped game, unrelated
+to the map-halving itself, but directly blocked safely choosing a smaller
+`cellSize` for the smaller map — so it's fixed now rather than left as a
+silent trap for the next person who tries a finer grid.
+
+### Verification (map halving)
+
+**Live-verified** (Playwright, headless Chromium was reachable this
+session — unlike the prior tuning-panel round, which hit an egress block):
+started a real run and read the live `Game` instance directly —
+`core.x/y` = (1200, 2180) (matches `WORLD.width/2`, `WORLD.height-220`
+exactly); `doors` = 3 doors at x=840/1140/1440 (gap centers 900/1200/1500 ±
+60 half-width — matches `gapOffsets` [-300,0,300] off `CORE.x`=1200 exactly)
+all at y=1973 (matches `wallY - wallThickness/2` =
+`(CORE.y - wallSetback) - 12` = `1985 - 12` exactly); `obstacles.length` =
+31 (matches `treeCount + rockCountMin` = 23+8 exactly); `pathfinder.
+getDirection(400, 400)` returns a normalized vector pointing down-and-right
+(toward the core, which sits south-southeast of that point) — flow field
+is live and sane at the new size. Screenshots (zoomed out via a forced
+camera zoom/snap) confirm the base pen, 3-gap wall with doors seated
+exactly in the gaps, 2 spawners, the shop marker, the road grid, and an
+obstacle patch all render in visually sensible proportion to each other at
+the new map size — see the session's screenshots (`map_base_area.png`).
+Also code-reviewed every `WORLD.width`/`WORLD.height`/`WORLD.cellSize`
+usage across `src/` (via grep) to confirm nothing reads a stale hardcoded
+map-size literal outside the constants above (`render/renderer.ts`,
+`combat/projectiles.ts`, `ui/minimap.ts`, `entities/movement.ts` all read
+`WORLD.width/height` live, so needed no changes).
+
+## Post-launch: two tuning-panel input conflicts fixed
+
+Both rough edges the panel's own launch report flagged as "not fixed, but
+worth flagging" (see that section above) — fixed now, on request.
+
+### 1. Arrow keys double as player movement while the tuning panel is open
+
+`Input.moveAxis()` reads `ArrowLeft`/`ArrowRight`/`ArrowUp`/`ArrowDown` as
+WASD aliases unconditionally, with no notion of UI focus — so adjusting a
+tuning-panel row with the arrow keys also nudged the player. **Fix**
+(`game.ts::simulate()`): while `this.tuningPanelOpen`, the movement axis is
+forced to `{x:0, y:0}` instead of reading `input.moveAxis()` at all — not
+just excluding the arrow keys, but zeroing movement outright, per the
+brief's own framing ("the player probably shouldn't be moving at all while
+a dev panel is open and capturing input"). This mirrors the shop panel's
+existing pattern of fully owning input while its own UI is up, but is
+implemented as a narrower, local guard (`this.tuningPanelOpen ? {x:0,y:0} :
+input.moveAxis()`) rather than an early-return like the shop panel's,
+because — unlike the shop, which freezes the whole game (`camera.update`
+gets `dt=0`, `simulate()` never runs) — the tuning panel's whole purpose is
+watching the world keep simulating (enemies, spawns, the spawn director's
+live rate) while you dial in a knob. Only the player's own control needed
+scoping, not the rest of `simulate()`.
+
+### 2. Space double-fires the panel's Reset row AND intermission-skip
+
+`Input.wasPressed()` is a same-tick edge flag any number of readers can
+observe (not a consume-once event) — `handleTuningKeys()` (runs first every
+tick) reads `wasPressed('Space')` for the panel's "Reset to Defaults" row
+when it's selected, and `simulate()` separately read `wasPressed('Space')`
+for "skip intermission early," with nothing stopping both from firing off
+one keypress if the panel happened to be open, on its Reset row, during an
+intermission. **Fix**: scoped `simulate()`'s intermission-skip check with
+`!this.tuningPanelOpen &&` rather than rebinding the panel's Reset action
+to a different key. Chosen over rebinding (the brief's other suggested
+option, e.g. Backspace/Delete) because input-scoping is the pattern this
+codebase already uses everywhere else a key means two things depending on
+context (the shop panel's own `KeyE`/`Escape` closing it rather than doing
+whatever `KeyE`/`Escape` mean elsewhere, is the same shape) — it keeps a
+single key doing a single thing per tick based on which system currently
+"owns" input, and needs no new keybind to document/discover. The panel's
+Reset action itself was already correctly scoped (`if (!this.
+tuningPanelOpen) return;` before its own Space/Enter read in
+`handleTuningKeys()`) — only `simulate()`'s side was missing the guard.
+
+### Verified live vs. code-review only (both input fixes)
+
+**Live-verified** (Playwright driving the real `Game` instance): held
+`ArrowRight` for 400ms with the panel open — player position unchanged
+(1260,2120 before and after) while `tuningOverride.spawnRateMult` moved
+from unset to 1.05, confirming the row adjusted and the player didn't move;
+closed the panel and repeated — player moved from x=1260 to x=1331.7,
+confirming normal arrow-key movement still works once the panel is closed.
+For Space: forced `waveManager.phase = 'intermission'`, opened the panel,
+selected its Reset row, set a non-default `tuningOverride`, pressed Space —
+`waveManager.phase` stayed `'intermission'` (skip did NOT fire) while
+`tuningOverride` was cleared to `{}` (reset DID fire); closed the panel,
+forced `'intermission'` again, pressed Space — `waveManager.phase` became
+`'running'` (skip DID fire), confirming the two actions no longer race and
+each still works standalone.
+
 **Flagging, not fixing (a design question, not a bug)**: the brief says
 "Clearing wave 25 is the win state," but the actual `GamePhase` type
 dropped `'victory'` entirely in Phase 3/round-8-carryover and the game
