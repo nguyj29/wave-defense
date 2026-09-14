@@ -17,12 +17,16 @@ import {
   RISK_MODIFIER,
   SHOP,
   SUMMON,
+  TUNING_KNOBS,
   WAVES,
   WEAPONS,
   WORLD,
+  isTuningOverrideEmpty,
   type DifficultyId,
   type EnemyDef,
   type PlayerClassId,
+  type TuningKnobId,
+  type TuningOverride,
 } from './config.ts';
 import { setGodMode, updateRegen } from './combat/damage.ts';
 import { applyAreaDamage, applyAreaDotDamage } from './combat/areaDamage.ts';
@@ -72,7 +76,9 @@ import { drawDebugOverlay, drawSpawnReadout, type DebugData, type SpawnReadoutDa
 import { drawHud, type HudData } from './ui/hud.ts';
 import { drawBossWarningBanner, drawMinimap } from './ui/minimap.ts';
 import { ShopPanel } from './ui/shopPanel.ts';
+import { TuningPanel } from './ui/tuningPanel.ts';
 import { drawStartScreen, hitTestStartScreen } from './ui/startScreen.ts';
+import { loadTuning, saveTuning, clearTuning } from './persistence/tuningStore.ts';
 import {
   drawBomberFuse,
   drawCollisionRadii,
@@ -209,6 +215,22 @@ export class Game {
   // (key T), off by default, persists across resets like difficulty/class.
   riskMode = false;
 
+  // Post-launch: live in-game tuning panel (B to toggle, Shift+B to export —
+  // see handleTuningKeys()/ui/tuningPanel.ts). tuningOverride is loaded from
+  // localStorage per-difficulty in reset() and is otherwise live game state:
+  // every panel edit updates it immediately (affecting the spawn director
+  // and all newly-spawned enemies from that point on — see DECISIONS.md for
+  // why already-spawned enemies are NOT retroactively rescaled) and is
+  // persisted (debounced) via tuningSaveTimer below.
+  tuningOverride: TuningOverride = {};
+  tuningPanel = new TuningPanel();
+  tuningPanelOpen = false;
+  private tuningDirty = false;
+  private tuningSaveTimer = 0;
+  private static readonly TUNING_SAVE_DEBOUNCE_SEC = 0.35;
+  tuningExportMessage: string | null = null;
+  private tuningExportMessageTimer = 0;
+
   debug: DebugState = {
     overlay: false,
     collisionRadii: false,
@@ -313,8 +335,21 @@ export class Game {
 
     this.playerWeaponState = createPlayerWeaponState(this.shopLevels, this.classSlot1Weapon());
 
+    // Post-launch: (re)load this difficulty's saved tuning override on every
+    // run start — this is the "auto-load on difficulty selection/game
+    // start" requirement (see DECISIONS.md). Any panel edits mid-run from
+    // the PREVIOUS run don't leak in since this always re-reads from
+    // localStorage rather than keeping the in-memory value across resets.
+    this.tuningOverride = loadTuning(this.difficulty);
+    this.tuningDirty = false;
+    this.tuningSaveTimer = 0;
+    this.tuningPanelOpen = false;
+    this.tuningExportMessage = null;
+    this.tuningExportMessageTimer = 0;
+
     this.waveManager = new WaveManager();
     this.spawnDirector = new SpawnDirector(getWaveForDifficulty(this.waveManager.currentWave, this.difficulty), this.effectiveSpawnRateMult());
+    this.applyTuningToSpawnDirector();
     this.rateHistory = [];
 
     this.camera.snapTo(this.player.x, this.player.y);
@@ -341,6 +376,7 @@ export class Game {
   private fixedUpdate(dt: number): void {
     const t0 = performance.now();
     this.handleDebugKeys();
+    this.handleTuningKeys();
 
     if (this.phase === 'start') {
       this.handleStartScreenInput();
@@ -797,6 +833,7 @@ export class Game {
 
   private onWaveTransition(bonus: number): void {
     this.spawnDirector = new SpawnDirector(getWaveForDifficulty(this.waveManager.currentWave, this.difficulty), this.effectiveSpawnRateMult());
+    this.applyTuningToSpawnDirector();
     this.currentWaveCoinBonus = bonus;
     if (this.waveManager.justEnteredEndless) {
       this.waveManager.justEnteredEndless = false;
@@ -853,9 +890,130 @@ export class Game {
     return computeRunGrade(this.scoreHistory, this.runDefeated);
   }
 
-  /** Difficulty spawnRateMult composed with the endless-wave escalation factor (round 8) — see DECISIONS.md. */
+  /**
+   * Difficulty spawnRateMult composed with the endless-wave escalation
+   * factor (round 8) AND the live tuning panel's own spawnRateMult knob
+   * (post-launch) — see DECISIONS.md for the exact multiplicative formula.
+   */
   private effectiveSpawnRateMult(): number {
-    return DIFFICULTY[this.difficulty].spawnRateMult * endlessFactor(this.waveManager.waveIndex + 1);
+    return DIFFICULTY[this.difficulty].spawnRateMult * endlessFactor(this.waveManager.waveIndex + 1) * (this.tuningOverride.spawnRateMult ?? 1);
+  }
+
+  /** Pushes the current tuningOverride's spawn-rate/alive-cap knobs onto the live SpawnDirector. */
+  private applyTuningToSpawnDirector(): void {
+    this.spawnDirector.setSpawnRateMult(this.effectiveSpawnRateMult());
+    this.spawnDirector.setAliveCapMult(this.tuningOverride.aliveCapMult ?? 1);
+  }
+
+  // -------------------------------------------------------------------
+  // Post-launch: live tuning panel (B toggle, Shift+B export) — see
+  // ui/tuningPanel.ts and persistence/tuningStore.ts. See DECISIONS.md for
+  // the exact keybind, composition formula, and export JSON shape.
+  // -------------------------------------------------------------------
+
+  /** Sets (or, if value is null, clears back to default) one tuning knob, applies it live, and schedules a debounced save. */
+  setTuningKnob(id: TuningKnobId, value: number | null): void {
+    if (value === null) delete this.tuningOverride[id];
+    else this.tuningOverride[id] = value;
+    this.applyTuningToSpawnDirector();
+    this.tuningDirty = true;
+    this.tuningSaveTimer = Game.TUNING_SAVE_DEBOUNCE_SEC;
+  }
+
+  /** The panel's reset action: clears every knob for the current difficulty, live and in storage. */
+  resetTuning(): void {
+    this.tuningOverride = {};
+    this.applyTuningToSpawnDirector();
+    clearTuning(this.difficulty);
+    this.tuningDirty = false;
+    this.tuningSaveTimer = 0;
+  }
+
+  private flushTuningSave(): void {
+    if (!this.tuningDirty) return;
+    saveTuning(this.difficulty, this.tuningOverride);
+    this.tuningDirty = false;
+  }
+
+  /**
+   * Shift+B: exports the current difficulty's full saved tuning override as
+   * a self-describing JSON blob — console.log'd (always works) and, best
+   * effort, copied to the clipboard (may be blocked/unavailable, wrapped in
+   * try/catch). See DECISIONS.md for the exact JSON shape and why.
+   */
+  private exportTuning(): void {
+    const payload = {
+      difficulty: this.difficulty,
+      exportedAt: new Date().toISOString(),
+      override: { ...this.tuningOverride },
+    };
+    const json = JSON.stringify(payload, null, 2);
+    // eslint-disable-next-line no-console -- intentional: this IS the console-facing export, always works regardless of clipboard permissions
+    console.log(`[Wave Defense Tuning Export — difficulty: ${this.difficulty}]\n${json}`);
+    try {
+      if (!navigator.clipboard) throw new Error('clipboard API unavailable');
+      navigator.clipboard.writeText(json).then(
+        () => {
+          this.tuningExportMessage = 'Tuning copied to clipboard — paste it to Claude to update defaults';
+          this.tuningExportMessageTimer = 4;
+        },
+        () => {
+          this.tuningExportMessage = 'Clipboard blocked — copy the JSON from the browser console instead';
+          this.tuningExportMessageTimer = 4;
+        },
+      );
+    } catch {
+      this.tuningExportMessage = 'Clipboard unavailable — copy the JSON from the browser console instead';
+      this.tuningExportMessageTimer = 4;
+    }
+    playSfx('uiClick', 0.6);
+  }
+
+  private handleTuningKeys(): void {
+    const input = this.input;
+    if (this.tuningExportMessageTimer > 0) {
+      this.tuningExportMessageTimer -= FIXED_DT;
+      if (this.tuningExportMessageTimer <= 0) this.tuningExportMessage = null;
+    }
+    if (this.tuningDirty) {
+      this.tuningSaveTimer -= FIXED_DT;
+      if (this.tuningSaveTimer <= 0) this.flushTuningSave();
+    }
+
+    // Only usable once a run exists (playing or the in-run shop) — the
+    // panel edits a difficulty's LIVE spawn director/spawn-time scaling,
+    // neither of which exists on the start/gameover screens.
+    const usable = this.phase === 'playing' || this.phase === 'shop';
+    if (!usable) return;
+
+    const shift = input.isDown('ShiftLeft') || input.isDown('ShiftRight');
+    if (input.wasPressed('KeyB')) {
+      if (shift) {
+        this.exportTuning();
+      } else {
+        this.tuningPanelOpen = !this.tuningPanelOpen;
+        if (!this.tuningPanelOpen) this.flushTuningSave(); // flush immediately on close rather than waiting out the debounce
+      }
+    }
+    if (!this.tuningPanelOpen) return;
+
+    const wheel = input.consumeWheel();
+    if (wheel !== 0) this.tuningPanel.moveSelection(wheel > 0 ? 1 : -1);
+
+    if (input.wasPressed('ArrowLeft')) this.tuningPanel.adjustSelected(-1, shift, this.tuningOverride, (id, v) => this.setTuningKnob(id, v));
+    if (input.wasPressed('ArrowRight')) this.tuningPanel.adjustSelected(1, shift, this.tuningOverride, (id, v) => this.setTuningKnob(id, v));
+    if ((input.wasPressed('Enter') || input.wasPressed('Space')) && this.tuningPanel.selectedIndex === TUNING_KNOBS.length) {
+      this.resetTuning();
+    }
+
+    if (input.mouseDown) {
+      this.tuningPanel.handleDrag(input.mouseX, input.mouseY, this.camera.screenWidth, this.camera.screenHeight, this.tuningOverride, (id, v) =>
+        this.setTuningKnob(id, v),
+      );
+    }
+    if (input.wasMousePressed()) {
+      this.tuningPanel.handleClick(input.mouseX, input.mouseY, this.camera.screenWidth, this.camera.screenHeight, () => this.resetTuning());
+    }
   }
 
   private trySummon(x: number, y: number): void {
@@ -931,8 +1089,15 @@ export class Game {
     // whatever the main difficulty tier already contributes — see
     // config.ts::RISK_MODIFIER.
     const riskEnemyMult = this.riskMode ? RISK_MODIFIER.enemyMult : 1;
-    const enemyHpMult = diff.enemyHpMult * riskEnemyMult;
-    const enemyDmgMult = diff.enemyDmgMult * riskEnemyMult;
+    // Post-launch: the live tuning panel's enemyHpMult/enemyDmgMult knobs are
+    // an EXTRA multiplier layer on top of difficulty + risk mode — see
+    // config.ts::TuningOverride and DECISIONS.md. Only newly-spawned enemies
+    // from this point on are affected (a deliberate simplification over
+    // retroactively rescaling already-alive enemies' current HP — see
+    // DECISIONS.md).
+    const enemyHpMult = diff.enemyHpMult * riskEnemyMult * (this.tuningOverride.enemyHpMult ?? 1);
+    const enemyDmgMult = diff.enemyDmgMult * riskEnemyMult * (this.tuningOverride.enemyDmgMult ?? 1);
+    const enemySpeedTuningMult = this.tuningOverride.enemySpeedMult ?? 1;
     // Phase 3: any of the 5 boss archetypes counts as "the boss" for
     // generation-offset purposes (generationForWave(wave, 1)), not just the
     // literal 'boss' key.
@@ -942,7 +1107,7 @@ export class Game {
     const def = ENEMIES[kind];
     const override: Partial<EnemyDef> = {
       hp: Math.round(def.hp * gen.hpDmg * enemyHpMult * endless),
-      speed: def.speed * gen.speed,
+      speed: def.speed * gen.speed * enemySpeedTuningMult,
       meleeDamage: Math.round(def.meleeDamage * gen.hpDmg * enemyDmgMult * endless),
       coinsMin: Math.max(1, Math.round(def.coinsMin * gen.coin)),
       coinsMax: Math.max(1, Math.round(def.coinsMax * gen.coin)),
@@ -1280,6 +1445,7 @@ export class Game {
       difficultyLabel: DIFFICULTY[this.difficulty].label,
       difficultyColor: DIFFICULTY[this.difficulty].color,
       spawningStopped: this.spawnDirector.spawningStopped,
+      tuningActive: !isTuningOverrideEmpty(this.tuningOverride),
     };
     drawHud(ctx, w, h, hudData);
     if (this.waveManager.phase === 'intermission') this.drawScorePanel();
@@ -1307,6 +1473,7 @@ export class Game {
         godMode: this.debug.godMode,
         spawnCycleType: DEBUG.spawnCycleTypes[this.debug.spawnCycleIndex],
         renderStyle: this.renderStyle,
+        tuningActive: !isTuningOverrideEmpty(this.tuningOverride),
       };
       drawDebugOverlay(ctx, debugData);
     }
@@ -1337,6 +1504,21 @@ export class Game {
     if (this.phase === 'shop') {
       this.shopPanel.updateHover(this.input.mouseX, this.input.mouseY, w, h);
       this.shopPanel.draw(ctx, w, h, this.coins, this.shopLevels);
+    }
+
+    // Post-launch: live tuning panel (B to toggle) — see ui/tuningPanel.ts.
+    if (this.tuningPanelOpen) {
+      this.tuningPanel.updateHover(this.input.mouseX, this.input.mouseY, w, h);
+      this.tuningPanel.draw(ctx, w, h, this.tuningOverride, DIFFICULTY[this.difficulty].label);
+    }
+    if (this.tuningExportMessage) {
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 22px monospace';
+      ctx.fillStyle = '#7CFC00';
+      ctx.fillText(this.tuningExportMessage, w / 2, h - 40);
+      ctx.textAlign = 'left';
+      ctx.restore();
     }
 
     if (this.phase === 'gameover') {

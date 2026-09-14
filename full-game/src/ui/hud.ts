@@ -41,6 +41,11 @@ export interface HudData {
   // Round 6: once spawning has stopped for this wave (timer elapsed) but
   // enemies remain, the timer display switches from a countdown to this.
   spawningStopped: boolean;
+  // Post-launch: true when the current difficulty has a non-empty live
+  // tuning override applied (see config.ts::TuningOverride/isTuningOverrideEmpty)
+  // — surfaced unobtrusively so a player who tuned things earlier and closed
+  // the panel doesn't forget custom numbers are still in effect.
+  tuningActive: boolean;
 }
 
 function fmtTime(t: number): string {
@@ -159,6 +164,18 @@ export function drawHud(ctx: CanvasRenderingContext2D, screenW: number, screenH:
     ctx.font = '22px sans-serif';
     ctx.fillStyle = 'rgba(255,255,255,0.8)';
     ctx.fillText(d.difficultyLabel, swatchX - 10, 56);
+  }
+
+  // Post-launch: small "tuned" indicator just below the difficulty readout,
+  // shown only while a non-empty tuning override is active for the current
+  // difficulty (see config.ts::TuningOverride) — so custom numbers from an
+  // earlier session are never a silent trap. Press-B tuning panel itself
+  // only draws while open; this stays visible whenever it matters.
+  if (d.tuningActive) {
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 20px monospace';
+    ctx.fillStyle = '#ffd766';
+    ctx.fillText('TUNED (B)', screenW - 16, 82);
   }
 
   // Player HP (bottom-left)

@@ -731,6 +731,293 @@ table — this was a **display-only** bug, but a bad one: it made the
 from `WAVES.length`) and using it in both the in-HUD wave counter and the
 endless-mode celebratory banner instead of the hardcoded literal.
 
+## Post-launch feature: live in-game tuning panel with per-difficulty persistence
+
+A dev tool: while playing, **B** opens/closes an on-screen panel that lets
+you live-adjust 5 balance knobs and see the effect immediately, with each
+change saved to `localStorage` keyed by the currently-selected difficulty
+tier and auto-reloaded the next time that difficulty is played (including
+after closing the browser tab — real persistence, not just in-session
+state). **Shift+B** exports the current difficulty's saved tuning as JSON
+(console + clipboard) so a developer without direct localStorage access can
+see what a player converged on. See `src/config.ts` (`TuningOverride`/
+`TUNING_KNOBS`/`isTuningOverrideEmpty`), `src/persistence/tuningStore.ts`,
+`src/ui/tuningPanel.ts`, and the `tuning*`-prefixed methods/fields on `Game`
+in `src/game.ts`.
+
+### Keybinds
+
+- **B** — toggle the tuning panel open/closed. Chosen because every function
+  key (F1-F10) was already bound (F9 in particular — the brief's suggested
+  candidate — turned out to already drive `printDevReadout()`), and every
+  letter key touched by movement (WASD), weapons (1/2/3/R), the shop (E),
+  music (M), or start-screen-only bindings (Q/W/E/R/T, 1-5, arrows) was
+  ruled out per the brief's own list. `B` (for "balance") was free in every
+  phase — confirmed by grepping `game.ts`/`input.ts` for every `Key*`/`F*`
+  code before picking it.
+- **Shift+B** — export the current difficulty's saved tuning (console log +
+  clipboard attempt). Reuses the same `KeyB` code (Shift doesn't change
+  `e.code`) with a held-Shift check, rather than binding a second key,
+  since it's a variant of the same "B for tuning" action, not a distinct
+  feature.
+- Only usable while `phase === 'playing'` or `'shop'` (gated in
+  `handleTuningKeys()`) — the panel edits a difficulty's *live* spawn
+  director and spawn-time scaling, neither of which exists on the
+  start/gameover screens.
+
+### Interaction model
+
+Modeled on `ui/shopPanel.ts`'s row-based hit-testing (same
+hover/hit-test/click structure) but visually reuses the debug overlay's
+dark-box/monospace/2x-text style (`ui/debugOverlay.ts`) instead of the
+shop's sans-serif player-facing look, since this is a dev tool. Per the
+brief's own suggestion, implemented as **scroll-to-select-row +
+left/right-arrow-to-adjust, plus click-and-drag-as-slider** as an
+alternative/faster path to the same rows:
+
+- **Mouse wheel** while the panel is open moves the selected-row highlight
+  (wheel is consumed here — via the same `Input.consumeWheel()` camera zoom
+  reads later in `simulate()` — so it never also zooms the camera while the
+  panel is open).
+- **Left/Right arrow keys** adjust the selected row by one step (`Shift` for
+  a 5x-bigger step), clamped to the knob's `[min, max]`.
+- **Click-and-drag** directly on a row's slider track sets that knob's value
+  from the cursor's X position, continuously while the mouse button is held
+  (`TuningPanel.handleDrag()` re-hit-tests every tick rather than tracking a
+  separate "currently dragging" state machine — since it recomputes which
+  row is under the cursor from scratch each call, a single click and a held
+  drag are the same code path, no extra state needed).
+- Adjusting a knob back to *exactly* its default value (`Math.abs(value -
+  default) < 1e-9`, both via arrow-stepping and via drag-snapping) **deletes
+  that key from the override** rather than storing `1.0` explicitly — keeps
+  the saved JSON minimal/clean (`{}` really does mean "no override," not
+  "override, but every field happens to be 1").
+- **Reset**: a dedicated "Reset \<Difficulty\> to Defaults" row at the
+  bottom of the panel — click it, or select it (scroll to the last row) and
+  press Enter/Space. Clears every knob for the current difficulty both live
+  (`this.tuningOverride = {}`, immediately re-applied to the spawn
+  director) and in storage (`clearTuning()`), and it stays cleared across a
+  reload (re-verified explicitly — see "Verification" below).
+
+**Known UX rough edge**: Left/Right arrow keys double as player movement
+(`Input.moveAxis()` reads `ArrowLeft`/`ArrowRight` alongside A/D) — using the
+arrow keys to adjust a panel row while playing will also nudge the player
+left/right, since `moveAxis()` doesn't know the panel is open. WASD remains
+unaffected and is the recommended way to keep moving while tuning via
+arrows; not fixed, since suppressing movement input based on UI focus felt
+like scope beyond what a dev tool needs, but worth flagging so it isn't
+mistaken for a bug. Likewise, `Enter`/`Space` triggering the Reset row can
+coincide with Space's existing "skip intermission early" binding if both are
+pressed while the panel's Reset row happens to be selected during an
+intermission — an unlikely but possible double-fire, not specifically
+guarded against.
+
+### The 5 knobs (`config.ts::TUNING_KNOBS`)
+
+| id | label | range | step | default |
+|---|---|---|---|---|
+| `spawnRateMult` | Spawn Rate | 0.25-3.0 | 0.05 | 1 |
+| `enemySpeedMult` | Enemy Speed | 0.25-3.0 | 0.05 | 1 |
+| `enemyDmgMult` | Enemy Damage | 0.1-5.0 | 0.05 | 1 |
+| `enemyHpMult` | Enemy HP | 0.1-5.0 | 0.05 | 1 |
+| `aliveCapMult` | Alive Cap | 0.25-3.0 | 0.05 | 1 |
+
+`enemySpeedMult` is a genuinely new knob — no per-difficulty speed
+multiplier existed before this feature (`DifficultyDef` only ever had
+`enemyHpMult`/`enemyDmgMult`/`spawnRateMult`/`rewardMult`). It composes with
+`generationScale(g).speed` at spawn time exactly like the difficulty tier's
+own `enemyHpMult` already composes with `generationScale(g).hpDmg`.
+
+### Composition formula (exact multiplicative layering)
+
+All 5 knobs are an **extra multiplier layer**, composed multiplicatively
+with (never replacing) the existing `DIFFICULTY[id]` tier and
+`endlessFactor()` — see `game.ts::effectiveSpawnRateMult()` and
+`spawnEnemyFromRequest()`:
+
+- **Spawn rate / alive cap**: `SpawnDirector`'s `spawnRateMult` field (drives
+  base/max spawn rate *and* the alive cap uniformly, pre-existing behavior)
+  is now `DIFFICULTY[id].spawnRateMult * endlessFactor(wave) *
+  (tuning.spawnRateMult ?? 1)`. `aliveCapMult` is a **separate, additional**
+  multiplier applied only to the cap (not the rate) —
+  `effectiveAliveCap = round(SPAWN_DIRECTOR.aliveCap * spawnRateMult *
+  aliveCapMult)` — so a player can loosen/tighten how many enemies can be
+  alive at once independent of how fast they spawn in. Both are pushed to
+  the live `SpawnDirector` instance immediately on every panel edit via new
+  `SpawnDirector.setSpawnRateMult()`/`setAliveCapMult()` setters (no
+  reconstruction needed — `update()` already re-reads these fields fresh
+  every tick, so the existing ramp-up/ramp-down easing smooths the
+  transition automatically, exactly as it already does for kill-rate-driven
+  rate changes).
+- **Enemy HP**: `enemyHpMult = DIFFICULTY[id].enemyHpMult * (riskMode ?
+  RISK_MODIFIER.enemyMult : 1) * (tuning.enemyHpMult ?? 1)`.
+- **Enemy damage**: `enemyDmgMult = DIFFICULTY[id].enemyDmgMult *
+  (riskMode ? RISK_MODIFIER.enemyMult : 1) * (tuning.enemyDmgMult ?? 1)`
+  (same risk/difficulty base as HP, per the pre-existing pattern).
+- **Enemy speed**: `speed = def.speed * generationScale(g).speed *
+  (tuning.enemySpeedMult ?? 1)` — a new multiplier slotted into the exact
+  spot `spawnEnemyFromRequest()` already computes an enemy's spawned speed.
+
+### Already-spawned enemies: NOT retroactively rescaled (judgment call)
+
+Per the brief's explicit "use your judgment" on this question: an
+HP/damage/speed knob edit only affects **enemies spawned after the edit**,
+not enemies already alive on the field. `tuningOverride` is read once, at
+the moment `spawnEnemyFromRequest()` builds that enemy's stat override —
+already-created `Entity` objects have their own concrete `health.hp`/
+`melee.damage`/`speedStat` fields already baked in from an earlier read, so
+there is nothing to retroactively touch. This was chosen over proportional
+live-rescaling of every alive entity's current HP because: (1) it's
+dramatically simpler (no need to reconcile in-flight damage-over-time
+effects, a bomber's already-computed detonation damage, a boss ability's
+already-scaled fields, etc. against a stat change mid-fight), and (2) for a
+dev-tool's realistic use case — tweak a knob, watch the *next* few spawns to
+judge the new balance — instant retroactive rescaling of the current
+crowd would actually be a confusing signal (is that enemy's HP bar
+reflecting its ORIGINAL scaling or an edit made moments ago?), whereas
+"new spawns only" gives a clean, unambiguous before/after to compare against
+by watching what appears next. Spawn rate/alive cap ARE fully live/immediate
+by their nature (they don't "belong" to any already-spawned entity).
+
+### Persistence (`src/persistence/tuningStore.ts`)
+
+- **Key format**: `wave-defense-full:tuning:${difficultyId}` (e.g.
+  `wave-defense-full:tuning:hard`) — one independent `localStorage` entry
+  per `DifficultyId` (`easy`/`normal`/`hard`/`veryHard`/`hell`), so a Hard
+  tuning session never leaks onto Easy or vice versa (verified — see
+  below). The `wave-defense-full:` prefix keeps it from colliding with
+  anything else that might use `localStorage` on the same origin later.
+- **Value shape**: `JSON.stringify(TuningOverride)` — a plain partial object
+  of whichever knobs are non-default, e.g. `{"spawnRateMult":1.3,
+  "enemyHpMult":0.8}`. An empty override is stored as *no key at all*
+  (`saveTuning()` calls `localStorage.removeItem()` when the override is
+  `{}`), not an empty-object string, so "does this difficulty have a saved
+  key" and "is the override non-empty" are the same question.
+- **Auto-load**: `Game.reset()` calls `loadTuning(this.difficulty)` every
+  run start (including the very first run) — this is what makes "select a
+  difficulty, previously-saved tuning for it just applies" work with no
+  extra step. Values are clamped back into each knob's `[min, max]` and any
+  non-numeric/unknown field is dropped on load, so a hand-edited or stale
+  saved blob can't push a stat out of its designed range or inject unknown
+  fields.
+- **Debounced writes**: every panel edit sets a dirty flag and resets a
+  0.35s timer (`Game.TUNING_SAVE_DEBOUNCE_SEC`), ticked down in
+  `handleTuningKeys()` each fixed tick; the actual `saveTuning()` call only
+  fires once the timer elapses with no further edits in between — so
+  dragging a slider across many ticks writes to `localStorage` once after
+  you stop, not every frame. Closing the panel (`B` while open) flushes
+  immediately rather than waiting out the debounce, so a "tweak it then
+  immediately close" flow doesn't lose the edit to a race with `reset()`
+  (not applicable here since reset() only happens at a new run, but kept as
+  a robustness matter of principle) or an unrelated navigation.
+- All reads/writes are wrapped in try/catch, verified to degrade silently to
+  `{}` (never throwing into game logic) when `localStorage` itself throws —
+  the private-browsing/disabled-storage case the brief called out
+  explicitly.
+
+### Reset mechanism
+
+The panel's bottom "Reset \<Difficulty\> to Defaults" row (click, or
+scroll-select it + Enter/Space) calls `Game.resetTuning()`: clears
+`this.tuningOverride` to `{}`, immediately re-applies the (now-default)
+multipliers to the live `SpawnDirector`, and calls
+`persistence/tuningStore.ts::clearTuning()` to remove the saved
+`localStorage` key outright (not just save an empty object) — verified to
+stay cleared after a simulated reload (a fresh `loadTuning()` call against
+the same backing store returns `{}` again, not a leftover empty object).
+
+### Export (added per a mid-task coordinator request)
+
+**Shift+B**, usable anywhere the panel itself is (`phase === 'playing' |
+'shop'`), regardless of whether the panel is currently open — exports
+*every* currently-tuned knob for the active difficulty (not just the
+selected/focused row) as one self-describing JSON blob:
+
+```json
+{
+  "difficulty": "hard",
+  "exportedAt": "2026-09-14T12:34:56.789Z",
+  "override": { "spawnRateMult": 1.3, "enemySpeedMult": 1.1, "enemyHpMult": 0.8 }
+}
+```
+
+- **Always**: `console.log()`s the pretty-printed JSON
+  (`JSON.stringify(payload, null, 2)`) prefixed with
+  `[Wave Defense Tuning Export — difficulty: hard]`, so it's findable in
+  devtools regardless of clipboard permissions — this path cannot fail.
+- **Best effort**: attempts `navigator.clipboard.writeText()` wrapped in
+  try/catch (missing API) plus a `.then()`/rejection handler (blocked
+  permission/insecure context) — on success shows an on-screen confirmation
+  ("Tuning copied to clipboard — paste it to Claude to update defaults") for
+  4 seconds; on failure/unavailability shows "Clipboard blocked/unavailable
+  — copy the JSON from the browser console instead." Both messages render
+  via `Game.tuningExportMessage`/`tuningExportMessageTimer`, drawn
+  bottom-center in `render()`.
+- If the current difficulty has no saved tuning, `override` exports as `{}`
+  — still valid JSON, just an explicit "nothing customized here" signal
+  rather than an error.
+
+### Indicator (avoiding a silent trap)
+
+Two places surface "this difficulty currently has a non-empty tuning
+override," per the brief's explicit ask that this not be silent:
+`HudData.tuningActive` draws a small `TUNED (B)` note in amber near the
+existing difficulty-tier swatch (top-right, always visible while playing,
+independent of whether the debug overlay is on), and the F1 debug overlay
+gained a `live tuning: ACTIVE (B to view/edit)` / `off (B to open)` line.
+Both read `isTuningOverrideEmpty(this.tuningOverride)` — the same function
+used everywhere else that needs to ask this question, so there's one
+definition of "empty."
+
+### Verification
+
+Playwright's Chromium binary could not be downloaded in this sandbox
+(`npx playwright install chromium` failed with a 403 from the session's
+egress proxy — `cdn.playwright.dev` is not on the allowlist — this is an
+environment/policy limitation, not a code issue, so a live-browser smoke
+test of this feature specifically was not possible this session, unlike
+every prior phase's Playwright-driven verification). In its place, every
+piece of pure/non-DOM logic was exercised directly via `tsx` against the
+actual project source (not reimplemented/mocked logic):
+
+- **Persistence** (`persistence/tuningStore.ts`, against a real
+  `localStorage`-shaped mock backing store, re-invoked fresh each time to
+  simulate a reload): a difficulty with no saved data loads `{}`; a saved
+  override round-trips exactly through a simulated reload; a different
+  difficulty does NOT inherit another's saved override; `clearTuning()`
+  removes the key and it stays removed on a subsequent fresh load; a
+  malformed/out-of-range saved blob (`spawnRateMult: 999`, a string where a
+  number is expected, an unknown field) is clamped/sanitized rather than
+  trusted verbatim; a `localStorage` that throws on every call degrades to
+  `{}`/no-op rather than crashing.
+- **SpawnDirector live-adjustment** (`waves/spawnDirector.ts`): confirmed
+  `effectiveAliveCap` composes `SPAWN_DIRECTOR.aliveCap * spawnRateMult *
+  aliveCapMult` correctly after calling the new setters (no
+  reconstruction); confirmed `currentRate` actually ramps toward a
+  newly-`setSpawnRateMult()`-assigned target over subsequent `update()`
+  ticks (not just a static getter change) — i.e. a live panel edit
+  genuinely reaches the running spawn simulation, not just a displayed
+  number.
+- **TuningPanel logic** (`ui/tuningPanel.ts`): `adjustSelected()` steps
+  correctly (including the 5x Shift multiplier), clamps at `min`/`max`, and
+  — the trickiest bit — snaps a value that lands back on exactly the
+  knob's default to `null`/deleted rather than storing an explicit `1.0`;
+  `handleDrag()`'s slider math was checked against the panel's own
+  documented layout constants at the track's left edge, right edge, and
+  midpoint, confirming cursor position maps to knob value correctly (and
+  step-snapped).
+- **Not independently live-browser-verified this session** (code-review
+  only, consistent with how prior phases labeled visual-only or
+  DOM-API-dependent pieces given similar constraints): the panel's actual
+  pixel rendering (`TuningPanel.draw()`), the real `KeyB`/`ShiftLeft`
+  keyboard-event path end-to-end through `Input`, the real
+  `navigator.clipboard.writeText()` call (a browser-only API), and
+  `spawnEnemyFromRequest()`'s full composed formula in a live `Game`
+  instance (its constituent pieces — `TuningOverride` composition
+  arithmetic, `SpawnDirector` live updates — were each verified directly;
+  wiring them through an actual canvas-backed `Game` object was not, since
+  that requires the same browser environment Playwright couldn't reach).
+
 **Flagging, not fixing (a design question, not a bug)**: the brief says
 "Clearing wave 25 is the win state," but the actual `GamePhase` type
 dropped `'victory'` entirely in Phase 3/round-8-carryover and the game

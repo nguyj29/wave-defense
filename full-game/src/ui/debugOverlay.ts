@@ -9,12 +9,15 @@ export interface DebugData {
   godMode: boolean;
   spawnCycleType: string;
   renderStyle: string;
+  // Post-launch: true when the current difficulty has a non-empty live
+  // tuning override applied — see config.ts::TuningOverride.
+  tuningActive: boolean;
 }
 
 export function drawDebugOverlay(ctx: CanvasRenderingContext2D, d: DebugData): void {
   ctx.save();
   ctx.fillStyle = 'rgba(0,0,0,0.6)';
-  ctx.fillRect(8, 8, 780, 340);
+  ctx.fillRect(8, 8, 780, 400);
   ctx.fillStyle = '#7CFC00';
   ctx.font = '24px monospace'; // 2x (round 7), line spacing/panel size scaled to match — see DECISIONS.md
   ctx.textAlign = 'left';
@@ -26,11 +29,13 @@ export function drawDebugOverlay(ctx: CanvasRenderingContext2D, d: DebugData): v
     `god mode: ${d.godMode ? 'ON' : 'off'}`,
     `F6 spawn type: ${d.spawnCycleType}`,
     `render style: ${d.renderStyle}`,
+    `live tuning: ${d.tuningActive ? 'ACTIVE (B to view/edit)' : 'off (B to open)'}`,
     '',
     'F1 overlay  F2 radii  F3 flow field',
     'F4 skip wave  F5 god  F6 spawn+scroll',
     'F7 spawn readout  F8 force boss',
     'F10 toggle render style',
+    'B tuning panel  Shift+B export tuning',
   ];
   lines.forEach((line, i) => ctx.fillText(line, 16, 16 + i * 28));
   ctx.restore();

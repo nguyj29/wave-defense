@@ -1362,6 +1362,55 @@ export function getWaveForDifficulty(base: WaveDef, difficultyId: DifficultyId):
   return { ...base, grunts: total - archers, archers };
 }
 
+// ---------------------------------------------------------------------------
+// Live tuning overrides (post-launch dev tool) — an EXTRA multiplier layer a
+// player can dial in at runtime via the in-game tuning panel (B to toggle,
+// see game.ts/ui/tuningPanel.ts), on top of (never replacing) the
+// per-difficulty DIFFICULTY[id] multipliers and the endless-mode
+// endlessFactor(). Saved to localStorage keyed by difficulty (see
+// persistence/tuningStore.ts) so it survives reloads and doesn't leak
+// between difficulty tiers. All fields optional — {} means "no override for
+// this difficulty yet," which is the common case. See DECISIONS.md for the
+// exact composition formula and the panel's interaction model.
+// ---------------------------------------------------------------------------
+export type TuningKnobId = 'spawnRateMult' | 'enemySpeedMult' | 'enemyDmgMult' | 'enemyHpMult' | 'aliveCapMult';
+
+export interface TuningOverride {
+  spawnRateMult?: number;
+  // New knob (didn't exist before this dev tool): an extra multiplier on
+  // enemy movement speed, composed with generationScale(g).speed at spawn
+  // time — see entities/factory.ts/game.ts::spawnEnemyFromRequest.
+  enemySpeedMult?: number;
+  enemyDmgMult?: number;
+  enemyHpMult?: number;
+  // A separate lever from spawnRateMult (which already scales the alive cap
+  // uniformly alongside base/max spawn rate) — this multiplies the resulting
+  // cap again, so a player can loosen/tighten the cap independent of how
+  // fast enemies actually spawn in.
+  aliveCapMult?: number;
+}
+
+export interface TuningKnobDef {
+  id: TuningKnobId;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  default: number;
+}
+
+export const TUNING_KNOBS: TuningKnobDef[] = [
+  { id: 'spawnRateMult', label: 'Spawn Rate', min: 0.25, max: 3.0, step: 0.05, default: 1 },
+  { id: 'enemySpeedMult', label: 'Enemy Speed', min: 0.25, max: 3.0, step: 0.05, default: 1 },
+  { id: 'enemyDmgMult', label: 'Enemy Damage', min: 0.1, max: 5.0, step: 0.05, default: 1 },
+  { id: 'enemyHpMult', label: 'Enemy HP', min: 0.1, max: 5.0, step: 0.05, default: 1 },
+  { id: 'aliveCapMult', label: 'Alive Cap', min: 0.25, max: 3.0, step: 0.05, default: 1 },
+];
+
+export function isTuningOverrideEmpty(o: TuningOverride): boolean {
+  return TUNING_KNOBS.every((k) => o[k.id] === undefined);
+}
+
 export const DIFFICULTY: Record<DifficultyId, DifficultyDef> = {
   easy: {
     label: 'Easy',

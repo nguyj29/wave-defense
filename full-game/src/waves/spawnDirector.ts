@@ -40,7 +40,15 @@ export class SpawnDirector {
   private spawnAccumulator = 0;
   // Difficulty scaling (round 6): uniformly scales baseRate/maxRate/aliveCap
   // for this wave's director. 1.0 on Normal reproduces prior balance exactly.
+  // Post-launch: this now also composes the live tuning panel's
+  // spawnRateMult (see game.ts::effectiveSpawnRateMult) — mutable via
+  // setSpawnRateMult() so a panel edit takes effect immediately, no wave
+  // restart needed.
   private spawnRateMult: number;
+  // Post-launch tuning panel: an independent extra multiplier on the alive
+  // cap only (does NOT affect base/max spawn rate) — see
+  // config.ts::TuningOverride.aliveCapMult.
+  private aliveCapMult = 1;
 
   private spawnPoints: SpawnPoint[];
   private spawnPointIndex = 0;
@@ -68,9 +76,19 @@ export class SpawnDirector {
     this.clumpTarget = SPAWN_DIRECTOR.clumpSizeMin;
   }
 
-  /** Difficulty-scaled alive cap for this director (see spawnRateMult). */
+  /** Difficulty-scaled alive cap for this director (see spawnRateMult/aliveCapMult). */
   get effectiveAliveCap(): number {
-    return Math.round(SPAWN_DIRECTOR.aliveCap * this.spawnRateMult);
+    return Math.round(SPAWN_DIRECTOR.aliveCap * this.spawnRateMult * this.aliveCapMult);
+  }
+
+  /** Post-launch tuning panel: live-update the composed difficulty*endless*tuning spawn-rate multiplier. */
+  setSpawnRateMult(mult: number): void {
+    this.spawnRateMult = mult;
+  }
+
+  /** Post-launch tuning panel: live-update the alive-cap-only extra multiplier. */
+  setAliveCapMult(mult: number): void {
+    this.aliveCapMult = mult;
   }
 
   /**
